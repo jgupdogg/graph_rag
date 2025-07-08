@@ -19,8 +19,8 @@ GraphRAG (Graph Retrieval-Augmented Generation) is a powerful system that create
 ```
 graph_rag/
 ├── venv/                    # Python virtual environment
-├── ragtest/                 # GraphRAG workspace
-│   ├── input/              # Input documents
+├── graphrag/                # GraphRAG workspace (main module)
+│   ├── input/              # Input documents (gitignored)
 │   │   └── book.txt        # Sample data (A Christmas Carol)
 │   ├── prompts/            # System prompts for different operations
 │   ├── settings.yaml       # Configuration file
@@ -55,7 +55,7 @@ graph_rag/
    ```
 
 4. **Configure API key**:
-   Edit `ragtest/.env` and replace `<API_KEY>` with your actual OpenAI API key:
+   Edit `graphrag/.env` and replace `<API_KEY>` with your actual OpenAI API key:
    ```
    GRAPHRAG_API_KEY=your_openai_api_key_here
    ```
@@ -68,10 +68,10 @@ Process the input documents to create the knowledge graph:
 
 ```bash
 source venv/bin/activate
-graphrag index --root ./ragtest
+graphrag index --root ./graphrag
 ```
 
-This will create output files in `ragtest/output/` containing the processed knowledge graph.
+This will create output files in `graphrag/output/` containing the processed knowledge graph.
 
 ### Querying the System
 
@@ -80,7 +80,7 @@ For high-level questions about themes, patterns, and overall insights:
 
 ```bash
 graphrag query \
-  --root ./ragtest \
+  --root ./graphrag \
   --method global \
   --query "What are the top themes in this story?"
 ```
@@ -90,14 +90,14 @@ For specific questions about entities and relationships:
 
 ```bash
 graphrag query \
-  --root ./ragtest \
+  --root ./graphrag \
   --method local \
   --query "Who is Scrooge and what are his main relationships?"
 ```
 
 ## Configuration
 
-The main configuration is in `ragtest/settings.yaml`. Key settings include:
+The main configuration is in `graphrag/settings.yaml`. Key settings include:
 
 - **Models**: Configure OpenAI or Azure OpenAI models
 - **Chunking**: Text chunk size and overlap settings
@@ -107,9 +107,9 @@ The main configuration is in `ragtest/settings.yaml`. Key settings include:
 
 ## Adding Your Own Data
 
-1. Place your text files in `ragtest/input/`
-2. Update the configuration in `ragtest/settings.yaml` if needed
-3. Run the indexing pipeline: `graphrag index --root ./ragtest`
+1. Place your text files in `graphrag/input/`
+2. Update the configuration in `graphrag/settings.yaml` if needed
+3. Run the indexing pipeline: `graphrag index --root ./graphrag`
 4. Query your data using the search commands
 
 ## Example Queries
@@ -126,7 +126,7 @@ The main configuration is in `ragtest/settings.yaml`. Key settings include:
 
 ## Troubleshooting
 
-1. **API Key Issues**: Make sure your OpenAI API key is correctly set in `ragtest/.env`
+1. **API Key Issues**: Make sure your OpenAI API key is correctly set in `graphrag/.env`
 2. **Rate Limits**: Adjust `tokens_per_minute` and `requests_per_minute` in `settings.yaml`
 3. **Memory Issues**: Reduce `concurrent_requests` in the model configuration
 4. **Large Files**: Adjust chunk size and overlap in the `chunks` section
