@@ -1,0 +1,33 @@
+# PDF Processing Requirements
+# Core dependencies for PDF to text extraction
+
+# PDF Processing Libraries
+PyMuPDF>=1.23.0        # Fast PDF text extraction
+pdfplumber>=0.9.0       # Advanced table extraction and layout analysis
+camelot-py[cv]>=0.10.1  # Specialized table extraction (optional)
+
+# OCR Support (optional)
+ocrmypdf>=14.0.0        # OCR for scanned PDFs
+pytesseract>=0.3.10     # Tesseract Python wrapper
+
+# Data Processing
+pandas>=1.5.0           # Data manipulation for tables
+numpy>=1.21.0           # Numerical operations
+
+# Text Processing
+regex>=2022.1.18        # Advanced regex for pattern matching
+python-dateutil>=2.8.2  # Date parsing
+nltk>=3.8               # Natural language processing
+
+# Configuration and Logging
+PyYAML>=6.0             # Configuration file parsing
+pydantic>=1.10.0        # Data validation
+
+# Utilities
+tqdm>=4.64.0            # Progress bars
+click>=8.0.0            # Command line interface
+pathlib>=1.0.1          # Path handling
+
+# Quality and Testing
+pytest>=7.0.0           # Testing framework
+pytest-cov>=4.0.0       # Coverage reporting

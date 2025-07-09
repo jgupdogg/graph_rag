@@ -1,0 +1,33 @@
+{
+  "source_file": "graphrag/input/CityofBaltimoreSpecifications(GreenBook)-2006.pdf",
+  "processing_date": "2025-07-08 15:40:58",
+  "pages_processed": 1181,
+  "total_pages": 1071,
+  "processing_time_minutes": 1.8257747689882915,
+  "file_size_mb": 116.84574604034424,
+  "text_length": 3223739,
+  "tables_found": 0,
+  "processing_errors": 0,
+  "extraction_method": "pymupdf_with_pdfplumber_fallback",
+  "chunk_size": 100,
+  "overlap_size": 10,
+  "quality_metrics": {
+    "chars_per_page": 2729.6689246401356,
+    "processing_speed": 646.8486803848332,
+    "success_rate": 1.1027077497665734
+  },
+  "recommended_graphrag_settings": {
+    "chunk_size": "600-800 tokens",
+    "overlap": "150-200 tokens",
+    "entity_types": [
+      "specification",
+      "requirement",
+      "contractor",
+      "material",
+      "procedure",
+      "standard",
+      "division",
+      "section"
+    ]
+  }
+}

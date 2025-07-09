@@ -1,0 +1,251 @@
+# PDF Processing Configuration
+# Configuration for PDF to text extraction pipeline
+
+# Processing Settings
+processing:
+  # Chunk settings for large PDF processing
+  chunk_size: 100          # Pages per chunk
+  overlap_size: 10         # Overlapping pages between chunks
+  max_workers: 4           # Parallel processing workers
+  
+  # Memory management
+  memory_limit_gb: 2       # Memory limit per chunk
+  cache_enabled: true      # Enable caching of processed chunks
+  cache_directory: "cache" # Cache directory (relative to output)
+  
+  # Timeout settings
+  page_timeout: 30         # Timeout per page (seconds)
+  chunk_timeout: 1800      # Timeout per chunk (30 minutes)
+
+# Extraction Methods
+extraction:
+  # Primary extraction method
+  primary_method: "pymupdf"  # Options: pymupdf, pdfplumber, auto
+  
+  # Fallback methods (tried in order if primary fails)
+  fallback_methods:
+    - "pdfplumber"
+    - "pymupdf"
+  
+  # Method-specific settings
+  pymupdf:
+    extract_images: false
+    preserve_layout: true
+    
+  pdfplumber:
+    extract_tables: true
+    table_settings:
+      vertical_strategy: "lines"
+      horizontal_strategy: "lines"
+      snap_tolerance: 3
+      
+  camelot:
+    enabled: false          # Enable Camelot for table extraction
+    flavor: "lattice"       # Options: lattice, stream
+    pages: "all"            # Pages to process for tables
+
+# Document Type Detection
+document_types:
+  # Patterns for detecting technical documents
+  technical:
+    title_patterns:
+      - "specification"
+      - "standard"
+      - "requirements"
+      - "engineering"
+      - "construction"
+    content_patterns:
+      - "shall be"
+      - "minimum.*psi"
+      - "astm|iso|ansi"
+      - "concrete|steel|asphalt"
+    
+  # Patterns for detecting legal documents
+  legal:
+    title_patterns:
+      - "contract"
+      - "agreement"
+      - "legal"
+      - "law"
+    content_patterns:
+      - "whereas"
+      - "party of the first part"
+      - "jurisdiction"
+      
+  # Patterns for detecting academic papers
+  academic:
+    title_patterns:
+      - "research"
+      - "study"
+      - "analysis"
+      - "journal"
+    content_patterns:
+      - "abstract"
+      - "methodology"
+      - "references"
+      - "et al."
+
+# Output Formatting
+output:
+  # Text formatting options
+  preserve_page_breaks: true
+  add_page_markers: true
+  add_section_markers: true
+  
+  # Table formatting
+  format_tables: true
+  table_marker_format: "[TABLE_START: Page {page}, Table {index}]"
+  
+  # Structure preservation
+  preserve_headers: true
+  header_detection:
+    min_font_size: 12
+    bold_weight_threshold: 600
+    
+  # Entity hints (pre-mark potential entities)
+  add_entity_hints: true
+  entity_hint_patterns:
+    specifications:
+      - "\\b\\w+\\s+shall\\s+(be|have)\\s+[^.]+\\."
+      - "minimum\\s+\\d+\\s*\\w+"
+      - "type\\s+[A-Z]\\s+\\w+"
+    standards:
+      - "\\b(ASTM|ISO|ANSI|AASHTO)\\s*[A-Z]?\\d+(?:[.-]\\d+)?"
+    materials:
+      - "\\b(concrete|steel|asphalt|aggregate)\\b"
+    measurements:
+      - "\\d+(?:\\.\\d+)?\\s*(psi|mpa|kg|lb|inch|mm|cm|ft)"
+
+# Quality Validation
+quality:
+  # Validation level
+  validation_level: "normal"  # Options: strict, normal, lenient
+  
+  # Quality thresholds
+  thresholds:
+    text_coverage: 0.85
+    character_accuracy: 0.90
+    word_accuracy: 0.85
+    table_detection: 0.70
+    structure_preservation: 0.70
+    entity_readiness: 0.70
+    overall_minimum: 0.75
+  
+  # Issue detection
+  detect_garbled_text: true
+  detect_encoding_issues: true
+  detect_layout_problems: true
+  
+  # Reporting
+  generate_quality_report: true
+  save_validation_details: true
+
+# GraphRAG Integration
+graphrag:
+  # Optimal settings for GraphRAG processing
+  recommended_chunk_size: 800    # Smaller chunks for better entity extraction
+  recommended_overlap: 200       # More overlap for context preservation
+  
+  # Entity types for technical documents
+  technical_entity_types:
+    - "specification"
+    - "material"
+    - "standard"
+    - "equipment"
+    - "procedure"
+    - "measurement"
+    - "requirement"
+    - "organization"
+    - "location"
+  
+  # Processing recommendations
+  max_gleanings: 2              # Multiple extraction passes
+  enable_claims_extraction: true
+  community_detection:
+    max_cluster_size: 15
+  
+  # Output format optimization
+  optimize_for_graphrag: true
+  preserve_relationships: true
+  enhance_entity_context: true
+
+# Logging and Monitoring
+logging:
+  level: "INFO"                 # Options: DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # Log files
+  file_logging: true
+  log_directory: "logs"
+  
+  # Progress tracking
+  progress_reporting: true
+  progress_interval: 10         # Report progress every N pages
+
+# Advanced Settings
+advanced:
+  # OCR settings (if OCR is available)
+  ocr:
+    enabled: false
+    language: "eng"
+    config: "--psm 6"
+    
+  # Error handling
+  error_handling:
+    continue_on_page_error: true
+    max_page_errors: 10
+    retry_failed_pages: true
+    
+  # Performance tuning
+  performance:
+    optimize_memory: true
+    garbage_collect_interval: 50  # Pages
+    
+  # Security
+  security:
+    sanitize_output: true
+    remove_metadata: false
+    
+# Presets for common document types
+presets:
+  baltimore_engineering_specs:
+    processing:
+      chunk_size: 100
+      overlap_size: 10
+      max_workers: 4
+    extraction:
+      primary_method: "pdfplumber"
+      fallback_methods: ["pymupdf"]
+    output:
+      add_entity_hints: true
+      preserve_headers: true
+    graphrag:
+      recommended_chunk_size: 600
+      recommended_overlap: 200
+      technical_entity_types: true
+  
+  legal_contracts:
+    processing:
+      chunk_size: 50
+      overlap_size: 5
+    extraction:
+      primary_method: "pymupdf"
+    output:
+      preserve_page_breaks: true
+      add_section_markers: true
+    graphrag:
+      recommended_chunk_size: 1000
+      recommended_overlap: 150
+  
+  academic_papers:
+    processing:
+      chunk_size: 25
+      overlap_size: 3
+    extraction:
+      primary_method: "pdfplumber"
+    output:
+      preserve_headers: true
+      format_tables: true
+    graphrag:
+      recommended_chunk_size: 800
+      recommended_overlap: 100
