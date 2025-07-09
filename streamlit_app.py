@@ -11,6 +11,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 import json
+import streamlit.components.v1 as components
+from pyvis_graph import (
+    create_pyvis_network, 
+    render_pyvis_network,
+    get_entity_type_options,
+    get_degree_range,
+    optimize_for_large_graph
+)
 
 # Page configuration
 st.set_page_config(
@@ -205,11 +213,40 @@ def main():
     # Sidebar
     st.sidebar.header("Graph Controls")
     
-    # Layout selection
-    layout_type = st.sidebar.selectbox(
+    # Filtering controls
+    st.sidebar.subheader("Filtering Options")
+    
+    # Entity type filter
+    entity_types = get_entity_type_options(entities)
+    selected_types = st.sidebar.multiselect(
+        "Entity Types",
+        entity_types,
+        default=entity_types
+    )
+    
+    # Degree range filter
+    min_degree, max_degree = get_degree_range(entities)
+    degree_range = st.sidebar.slider(
+        "Degree Range",
+        min_value=min_degree,
+        max_value=max_degree,
+        value=(min_degree, max_degree)
+    )
+    
+    # Search filter
+    search_term = st.sidebar.text_input("Search Entities")
+    
+    # Layout options
+    layout_option = st.sidebar.selectbox(
         "Layout Algorithm",
-        ["spring", "circular", "kamada_kawai"],
+        ["barnes_hut", "force_atlas_2", "hierarchical"],
         index=0
+    )
+    
+    # Performance optimization
+    optimize_graph = st.sidebar.checkbox(
+        "Optimize for Large Graphs (top 100 nodes)",
+        value=len(entities) > 100
     )
     
     # Graph statistics
@@ -219,73 +256,38 @@ def main():
     st.sidebar.metric("Graph Density", f"{nx.density(G):.3f}")
     st.sidebar.metric("Connected Components", nx.number_connected_components(G))
     
-    # Main content
-    col1, col2 = st.columns([2, 1])
+    # Main content - Full width graph
+    # Optimize for large graphs if enabled
+    display_entities = entities
+    display_relationships = relationships
     
-    with col1:
-        st.subheader("Interactive Knowledge Graph")
-        
-        # Create and display graph
-        fig = create_plotly_graph(G, layout_type)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        st.subheader("Entity Details")
-        
-        # Entity type distribution
-        entity_types = entities['type'].value_counts()
-        fig_pie = px.pie(
-            values=entity_types.values,
-            names=entity_types.index,
-            title="Entity Type Distribution"
+    if optimize_graph:
+        display_entities, display_relationships = optimize_for_large_graph(
+            entities, relationships, threshold=100
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
-        
-        # Most connected entities
-        st.subheader("Most Connected Entities")
-        degrees = dict(G.degree())
-        top_entities = sorted(degrees.items(), key=lambda x: x[1], reverse=True)[:10]
-        
-        for entity, degree in top_entities:
-            entity_type = G.nodes[entity].get('type', 'unknown')
-            st.write(f"**{entity}** ({entity_type}): {degree} connections")
+        st.info(f"Displaying top {len(display_entities)} entities for performance")
     
-    # Detailed data views
-    st.subheader("Detailed Data")
+    # Create PyVis network
+    try:
+        with st.spinner("Creating interactive network..."):
+            net = create_pyvis_network(
+                display_entities,
+                display_relationships,
+                entity_filter=selected_types if selected_types else None,
+                degree_range=degree_range,
+                search_term=search_term if search_term else None,
+                layout=layout_option
+            )
+            
+            # Render network
+            html_content = render_pyvis_network(net)
+            
+            # Display in Streamlit with full width
+            components.html(html_content, height=850)
+    except Exception as e:
+        st.error(f"Error creating graph: {e}")
+        st.info("Try adjusting the filters or switching to a different layout algorithm.")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["Entities", "Relationships", "Communities", "Community Reports"])
-    
-    with tab1:
-        st.dataframe(entities[['title', 'type', 'description', 'degree', 'frequency']], use_container_width=True)
-    
-    with tab2:
-        st.dataframe(relationships[['source', 'target', 'description', 'weight']], use_container_width=True)
-    
-    with tab3:
-        if len(communities) > 0:
-            st.dataframe(communities, use_container_width=True)
-        else:
-            st.info("No community data available")
-    
-    with tab4:
-        if len(community_reports) > 0:
-            for _, report in community_reports.iterrows():
-                st.write(f"**Community {report.get('id', 'Unknown')}**")
-                st.write(report.get('content', report.get('summary', 'No content available')))
-                st.write("---")
-        else:
-            st.info("No community reports available")
-    
-    # Search functionality
-    st.subheader("Search Entities")
-    search_term = st.text_input("Search for entities:")
-    
-    if search_term:
-        matches = entities[entities['title'].str.contains(search_term, case=False, na=False)]
-        if len(matches) > 0:
-            st.dataframe(matches[['title', 'type', 'description']], use_container_width=True)
-        else:
-            st.info("No entities found matching your search.")
 
 if __name__ == "__main__":
     main()
