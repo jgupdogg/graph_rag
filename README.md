@@ -1,6 +1,6 @@
 # Baltimore City GraphRAG Explorer
 
-An interactive knowledge graph system for exploring Baltimore City Engineering Specifications using Microsoft GraphRAG with PyVis visualization.
+A production-ready interactive knowledge graph system for exploring multiple documents using Microsoft GraphRAG with PyVis visualization and enhanced document management.
 
 ## Overview
 
@@ -8,15 +8,21 @@ This project combines Microsoft GraphRAG's powerful knowledge extraction capabil
 
 ## Features
 
-- **Interactive PyVis Visualization**: Dynamic network graphs with node selection, filtering, and rich popups
-- **Streamlit Web Interface**: Clean, user-friendly interface for graph exploration
-- **PDF Document Processing**: Extract and process Baltimore City specification PDFs
-- **Knowledge Graph Construction**: Automatically extracts entities, relationships, and communities
-- **Advanced Filtering**: Filter by entity type, degree range, and search terms
-- **Multiple Layout Algorithms**: Barnes-Hut, Force Atlas 2, and Hierarchical layouts
-- **Performance Optimization**: Handles large graphs with intelligent node limiting
-- **Global & Local Search**: High-level insights and specific entity queries
-- **Dark Mode Support**: Transparent graph background adapts to themes
+- **✅ Multi-Document Processing**: Upload and process multiple PDF/TXT files simultaneously
+- **✅ Real PDF Text Extraction**: Robust PDF text extraction using PyPDF2 with fallback libraries
+- **✅ Interactive PyVis Visualization**: Dynamic network graphs with document color-coding and filtering
+- **✅ Enhanced Document Management**: Comprehensive upload, processing, and error recovery system
+- **✅ Graph Merging & Source Tracking**: Combine multiple documents with source attribution
+- **✅ Error Recovery & Retry**: One-click retry functionality for failed document processing
+- **✅ Real-time Processing Status**: Live updates on document processing progress
+- **✅ Advanced Filtering**: Filter by entity type, degree range, search terms, and source document
+- **✅ Processing Logs & Debugging**: Detailed step-by-step processing logs with status indicators
+- **✅ Background Processing**: Non-blocking document processing with status updates
+- **✅ Global & Local Search**: High-level insights and specific entity queries across documents
+- **✅ Performance Optimization**: Handles large multi-document graphs efficiently
+- **✅ Document Chat Interface**: Interactive chat functionality with GraphRAG-powered responses
+- **✅ Multi-Search Methods**: Support for local, global, drift, and basic search types
+- **✅ Chat History**: Conversation history with source attribution and method tracking
 
 ## Project Structure
 
@@ -24,6 +30,9 @@ This project combines Microsoft GraphRAG's powerful knowledge extraction capabil
 graph_rag/
 ├── streamlit_app.py         # Main Streamlit web interface
 ├── pyvis_graph.py          # PyVis network creation and rendering
+├── query_logic.py          # GraphRAG query engine and chat functionality
+├── app_logic.py            # Document processing and management logic
+├── config_manager.py       # Configuration management
 ├── extract_baltimore_specs.py  # PDF processing utility
 ├── run_pipeline.py         # GraphRAG pipeline runner
 ├── run_streamlit.sh        # Streamlit startup script
@@ -60,12 +69,13 @@ graph_rag/
 
 3. **Install dependencies**:
    ```bash
-   pip install graphrag pyvis streamlit
+   pip install graphrag pyvis streamlit PyPDF2
    ```
 
 4. **Configure API key**:
-   Edit `graphrag/.env` and add your OpenAI API key:
+   Create a `.env` file in the project root with your OpenAI API key:
    ```
+   OPENAI_API_KEY=your_openai_api_key_here
    GRAPHRAG_API_KEY=your_openai_api_key_here
    ```
 
@@ -114,6 +124,33 @@ The PyVis visualization provides:
 - **Layout Options**: Choose from Barnes-Hut, Force Atlas 2, or Hierarchical layouts
 - **Performance Mode**: Automatically optimizes display for large graphs (100+ nodes)
 - **Selection Highlighting**: Click nodes to highlight connections and neighbors
+
+### Document Chat Interface
+
+The interactive chat interface provides GraphRAG-powered querying capabilities:
+
+- **Multiple Search Methods**: 
+  - **Local Search**: Find specific details and direct answers from documents
+  - **Global Search**: Discover high-level themes and patterns across documents
+  - **Drift Search**: Contextual search that follows semantic relationships
+  - **Basic Search**: Simple keyword-based search functionality
+
+- **Multi-Document Querying**: Ask questions across all selected documents simultaneously
+- **Chat History**: View conversation history with timestamps and source attribution
+- **Source Attribution**: See which documents contributed to each response
+- **Error Handling**: Robust error handling with helpful error messages
+
+#### Chat Usage Examples
+
+**Local Search** (specific details):
+- "What are the engineering requirements for water systems?"
+- "Who are the key contractors mentioned?"
+- "What are the compliance standards for this project?"
+
+**Global Search** (themes and patterns):
+- "What are the main themes across all documents?"
+- "What are the common requirements mentioned?"
+- "What are the key priorities in these documents?"
 
 ### Command Line Queries
 
