@@ -23,6 +23,30 @@ DB_PATH = Path("metadata.db")
 WORKSPACES_DIR = Path("workspaces")
 GRAPHRAG_CONFIG_DIR = Path("graphrag_config")
 CURRENT_GRAPHRAG_DIR = Path("graphrag")
+VENV_GRAPHRAG_PATH = Path(__file__).parent / "venv" / "bin" / "graphrag"
+PROJECT_ROOT = Path(__file__).parent.resolve()
+
+class DBManager:
+    """Context manager for SQLite database operations."""
+    
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.conn = None
+        self.cursor = None
+    
+    def __enter__(self):
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.cursor = self.conn.cursor()
+        return self.cursor
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.conn.rollback()
+            logger.error(f"Database error: {exc_val}")
+        else:
+            self.conn.commit()
+        self.conn.close()
 
 class DocumentStatus:
     """Document processing status constants."""
@@ -35,6 +59,7 @@ class GraphRAGProcessor:
     """Main class for handling GraphRAG multi-document processing."""
     
     def __init__(self):
+        self.db_manager = DBManager(DB_PATH)
         self.init_db()
         self._ensure_directories()
         self.fix_workspace_paths()
@@ -48,89 +73,69 @@ class GraphRAGProcessor:
     
     def init_db(self):
         """Initialize SQLite database and create tables if they don't exist."""
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Create documents table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY,
-                display_name TEXT NOT NULL,
-                original_filename TEXT NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('UPLOADED', 'PROCESSING', 'COMPLETED', 'ERROR')),
-                workspace_path TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                file_size INTEGER,
-                processing_time INTEGER,
-                error_message TEXT
-            )
-        """)
-        
-        # Create processing logs table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS processing_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                document_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                message TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                level TEXT DEFAULT 'INFO',
-                FOREIGN KEY (document_id) REFERENCES documents(id)
-            )
-        """)
-        
-        conn.commit()
-        conn.close()
+        with self.db_manager as cursor:
+            # Create documents table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('UPLOADED', 'PROCESSING', 'COMPLETED', 'ERROR')),
+                    workspace_path TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    file_size INTEGER,
+                    processing_time INTEGER,
+                    error_message TEXT
+                )
+            """)
+            
+            # Create processing logs table with CASCADE delete
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processing_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    level TEXT DEFAULT 'INFO',
+                    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+                )
+            """)
         logger.info("Database initialized successfully")
+    
+    def get_all_documents(self, status: Optional[str] = None) -> List[Dict]:
+        """Fetch all documents or documents filtered by status from the database."""
+        try:
+            with self.db_manager as cursor:
+                query = """
+                    SELECT id, display_name, original_filename, status, created_at, 
+                           updated_at, file_size, processing_time, error_message
+                    FROM documents
+                """
+                params = ()
+                if status:
+                    query += " WHERE status = ?"
+                    params = (status,)
+                query += " ORDER BY created_at DESC"
+                
+                cursor.execute(query, params)
+                return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.OperationalError as e:
+            logger.error(f"Database error: {e}")
+            return []
     
     def get_processed_documents(self) -> List[Dict]:
         """Fetch all successfully processed documents from the database."""
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, display_name, original_filename, status, created_at, file_size 
-                FROM documents 
-                WHERE status = 'COMPLETED' 
-                ORDER BY created_at DESC
-            """)
-            docs = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            return docs
-        except sqlite3.OperationalError as e:
-            logger.error(f"Database error: {e}")
-            return []
-    
-    def get_all_documents(self) -> List[Dict]:
-        """Fetch all documents from the database."""
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, display_name, original_filename, status, created_at, 
-                       updated_at, file_size, processing_time, error_message
-                FROM documents 
-                ORDER BY created_at DESC
-            """)
-            docs = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            return docs
-        except sqlite3.OperationalError as e:
-            logger.error(f"Database error: {e}")
-            return []
+        return self.get_all_documents(status=DocumentStatus.COMPLETED)
     
     def get_document_status(self, doc_id: str) -> Optional[str]:
         """Get the current status of a document."""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT status FROM documents WHERE id = ?", (doc_id,))
-            result = cursor.fetchone()
-            conn.close()
-            return result[0] if result else None
+            with self.db_manager as cursor:
+                cursor.execute("SELECT status FROM documents WHERE id = ?", (doc_id,))
+                result = cursor.fetchone()
+                return result[0] if result else None
         except sqlite3.Error as e:
             logger.error(f"Error getting document status: {e}")
             return None
@@ -138,15 +143,12 @@ class GraphRAGProcessor:
     def update_document_status(self, doc_id: str, status: str, error_message: str = None):
         """Update document status in the database."""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE documents 
-                SET status = ?, updated_at = CURRENT_TIMESTAMP, error_message = ?
-                WHERE id = ?
-            """, (status, error_message, doc_id))
-            conn.commit()
-            conn.close()
+            with self.db_manager as cursor:
+                cursor.execute("""
+                    UPDATE documents 
+                    SET status = ?, updated_at = CURRENT_TIMESTAMP, error_message = ?
+                    WHERE id = ?
+                """, (status, error_message, doc_id))
             logger.info(f"Updated document {doc_id} status to {status}")
         except sqlite3.Error as e:
             logger.error(f"Error updating document status: {e}")
@@ -154,14 +156,11 @@ class GraphRAGProcessor:
     def log_processing_step(self, doc_id: str, stage: str, message: str, level: str = "INFO"):
         """Log a processing step for a document."""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO processing_logs (document_id, stage, message, level)
-                VALUES (?, ?, ?, ?)
-            """, (doc_id, stage, message, level))
-            conn.commit()
-            conn.close()
+            with self.db_manager as cursor:
+                cursor.execute("""
+                    INSERT INTO processing_logs (document_id, stage, message, level)
+                    VALUES (?, ?, ?, ?)
+                """, (doc_id, stage, message, level))
         except sqlite3.Error as e:
             logger.error(f"Error logging processing step: {e}")
     
@@ -206,23 +205,41 @@ class GraphRAGProcessor:
     def extract_text_from_pdf(self, pdf_path: Path, output_path: Path) -> bool:
         """Extract text from PDF file using PyPDF2 or other libraries."""
         try:
-            # If it's already a text file, just copy it
+            # Import our document structure parser
+            from document_structure_parser import extract_document_structure
+            
+            # If it's already a text file, process it for structure
             if pdf_path.suffix.lower() == '.txt':
-                shutil.copy2(pdf_path, output_path)
-                return True
-            
+                with open(pdf_path, 'r', encoding='utf-8') as f:
+                    text_content = f.read()
             # For PDF files, try multiple extraction methods
-            if pdf_path.suffix.lower() == '.pdf':
+            elif pdf_path.suffix.lower() == '.pdf':
                 text_content = self._extract_pdf_text_content(pdf_path)
-                if text_content:
-                    with open(output_path, 'w', encoding='utf-8') as f:
-                        f.write(text_content)
-                    return True
+                if not text_content:
+                    # Fallback: create a placeholder text file
+                    text_content = f"Text extracted from {pdf_path.name}\nThis is a placeholder. Implement actual PDF extraction.\n"
+            else:
+                # Unsupported file type
+                text_content = f"Text extracted from {pdf_path.name}\nUnsupported file type.\n"
             
-            # Fallback: create a placeholder text file
+            # Extract document structure
+            sections, structured_text, metadata_list = extract_document_structure(text_content)
+            
+            # Save structured text
             with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(f"Text extracted from {pdf_path.name}\n")
-                f.write("This is a placeholder. Implement actual PDF extraction.\n")
+                f.write(structured_text)
+            
+            # Save section metadata as JSON file
+            import json
+            metadata_path = output_path.parent / f"{output_path.stem}_structure.json"
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'sections': metadata_list,
+                    'total_sections': len(sections),
+                    'document': pdf_path.name
+                }, f, indent=2)
+            
+            logger.info(f"Extracted {len(sections)} sections from {pdf_path.name}")
             
             return True
         except Exception as e:
@@ -231,151 +248,152 @@ class GraphRAGProcessor:
     
     def _extract_pdf_text_content(self, pdf_path: Path) -> str:
         """Extract text content from PDF using available libraries."""
-        try:
-            # Try PyPDF2 first
+        # Try libraries in order of preference
+        extraction_methods = [
+            ("PyPDF2", self._extract_with_pypdf2),
+            ("pdfplumber", self._extract_with_pdfplumber),
+            ("PyMuPDF", self._extract_with_pymupdf)
+        ]
+        
+        for lib_name, extract_func in extraction_methods:
             try:
-                import PyPDF2
-                with open(pdf_path, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
-                    text = ""
-                    for page_num in range(len(pdf_reader.pages)):
-                        page = pdf_reader.pages[page_num]
-                        text += page.extract_text() + "\n"
-                    return text.strip()
+                logger.info(f"Attempting PDF extraction with {lib_name}")
+                text = extract_func(pdf_path)
+                if text:
+                    return text
             except ImportError:
-                logger.warning("PyPDF2 not available, trying pdfplumber")
-            
-            # Try pdfplumber as fallback
-            try:
-                import pdfplumber
-                text = ""
-                with pdfplumber.open(pdf_path) as pdf:
-                    for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                return text.strip()
-            except ImportError:
-                logger.warning("pdfplumber not available, trying pymupdf")
-            
-            # Try PyMuPDF (fitz) as another fallback
-            try:
-                import fitz  # PyMuPDF
-                doc = fitz.open(pdf_path)
-                text = ""
-                for page_num in range(len(doc)):
-                    page = doc.load_page(page_num)
-                    text += page.get_text() + "\n"
-                doc.close()
-                return text.strip()
-            except ImportError:
-                logger.warning("PyMuPDF not available")
-            
-            # If no PDF libraries are available, return placeholder
-            return f"PDF text extraction from {pdf_path.name}\n(No PDF libraries available - install PyPDF2, pdfplumber, or PyMuPDF)"
-            
-        except Exception as e:
-            logger.error(f"Error extracting PDF text: {e}")
-            return f"Error extracting text from {pdf_path.name}: {str(e)}"
+                logger.warning(f"{lib_name} not available")
+            except Exception as e:
+                logger.error(f"Error with {lib_name}: {e}")
+        
+        # If no libraries work, return placeholder
+        return f"PDF text extraction from {pdf_path.name}\n(No PDF libraries available - install PyPDF2, pdfplumber, or PyMuPDF)"
     
-    def process_document_background(self, doc_id: str, uploaded_file, display_name: str):
-        """Process document in background thread."""
-        try:
-            start_time = datetime.now()
-            
-            # Get workspace path
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT workspace_path FROM documents WHERE id = ?", (doc_id,))
-            result = cursor.fetchone()
-            conn.close()
-            
-            if not result:
-                raise Exception("Document not found in database")
-            
-            workspace_path = Path(result[0])
-            
-            # Save uploaded file
-            self.log_processing_step(doc_id, "UPLOAD", f"Saving uploaded file: {display_name}")
-            input_path = workspace_path / "input" / uploaded_file.name
+    def _extract_with_pypdf2(self, pdf_path: Path) -> str:
+        """Extract text using PyPDF2."""
+        import PyPDF2
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            return text.strip()
+    
+    def _extract_with_pdfplumber(self, pdf_path: Path) -> str:
+        """Extract text using pdfplumber."""
+        import pdfplumber
+        text = ""
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+        return text.strip()
+    
+    def _extract_with_pymupdf(self, pdf_path: Path) -> str:
+        """Extract text using PyMuPDF."""
+        import fitz  # PyMuPDF
+        doc = fitz.open(pdf_path)
+        text = ""
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            text += page.get_text() + "\n"
+        doc.close()
+        return text.strip()
+    
+    def _validate_workspace(self, workspace_path: Path, text_path: Optional[Path] = None) -> None:
+        """Validate that workspace has required structure and files."""
+        absolute_workspace_path = workspace_path.resolve()
+        
+        if not absolute_workspace_path.exists():
+            raise Exception(f"Workspace directory does not exist: {absolute_workspace_path}")
+        
+        input_dir = absolute_workspace_path / "input"
+        if not input_dir.exists():
+            raise Exception(f"Input directory does not exist: {input_dir}")
+        
+        # Check for text files
+        if text_path and not text_path.exists():
+            raise Exception(f"Text file does not exist: {text_path}")
+        elif not text_path and not list(input_dir.glob("*.txt")):
+            raise Exception(f"No text files found in input directory: {input_dir}")
+        
+        # Check settings file
+        settings_path = absolute_workspace_path / "settings.yaml"
+        if not settings_path.exists():
+            raise Exception(f"Settings file does not exist: {settings_path}")
+    
+    def _run_graphrag_indexing(self, doc_id: str, workspace_path: Path) -> None:
+        """Run GraphRAG indexing process."""
+        self.log_processing_step(doc_id, "GRAPHRAG", f"Running GraphRAG indexing on {workspace_path.resolve()}")
+        
+        command = [str(VENV_GRAPHRAG_PATH), "index", "--root", str(workspace_path.resolve())]
+        
+        self.log_processing_step(doc_id, "GRAPHRAG", f"Command: {' '.join(command)}")
+        self.log_processing_step(doc_id, "GRAPHRAG", f"Working directory: {PROJECT_ROOT}")
+        
+        result = subprocess.run(command, capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        
+        if result.returncode != 0:
+            error_msg = f"GraphRAG failed: {result.stderr}"
+            self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
+            if result.stdout:
+                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {result.stdout}", "INFO")
+            raise Exception(error_msg)
+        
+        self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
+        if result.stdout:
+            self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {result.stdout}", "INFO")
+    
+    def _process_document_core(self, doc_id: str, workspace_path: Path, uploaded_file_buffer: bytes = None, original_filename: str = None) -> None:
+        """Core document processing logic shared between new and reprocess workflows."""
+        start_time = datetime.now()
+        
+        # Save file if this is a new upload
+        if uploaded_file_buffer and original_filename:
+            self.log_processing_step(doc_id, "UPLOAD", f"Saving uploaded file: {original_filename}")
+            input_path = workspace_path / "input" / original_filename
             with open(input_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+                f.write(uploaded_file_buffer)
             
-            # Extract text (if PDF)
+            # Extract text
             self.log_processing_step(doc_id, "EXTRACT", "Extracting text from document")
             text_path = workspace_path / "input" / f"{input_path.stem}.txt"
             if not self.extract_text_from_pdf(input_path, text_path):
                 raise Exception("Failed to extract text from document")
             
-            # Validate workspace before running GraphRAG
+            # Validate workspace
             self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
-            absolute_workspace_path = workspace_path.resolve()
+            self._validate_workspace(workspace_path, text_path)
+        else:
+            # For reprocessing, just validate existing workspace
+            self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
+            self._validate_workspace(workspace_path)
+        
+        # Run GraphRAG indexing
+        self._run_graphrag_indexing(doc_id, workspace_path)
+        
+        # Update processing time and status
+        processing_time = (datetime.now() - start_time).total_seconds()
+        with self.db_manager as cursor:
+            cursor.execute("UPDATE documents SET processing_time = ? WHERE id = ?", (int(processing_time), doc_id))
+        
+        self.update_document_status(doc_id, DocumentStatus.COMPLETED)
+        self.log_processing_step(doc_id, "COMPLETE", f"Processing completed in {processing_time:.2f} seconds")
+    
+    def process_document_background(self, doc_id: str, uploaded_file, _display_name: str):
+        """Process document in background thread."""
+        try:
+            # Get workspace path
+            with self.db_manager as cursor:
+                cursor.execute("SELECT workspace_path FROM documents WHERE id = ?", (doc_id,))
+                result = cursor.fetchone()
+                if not result:
+                    raise Exception("Document not found in database")
+                workspace_path = Path(result[0])
             
-            # Check that workspace and required directories exist
-            if not absolute_workspace_path.exists():
-                raise Exception(f"Workspace directory does not exist: {absolute_workspace_path}")
-            
-            input_dir = absolute_workspace_path / "input"
-            if not input_dir.exists():
-                raise Exception(f"Input directory does not exist: {input_dir}")
-            
-            # Check that text file exists
-            if not text_path.exists():
-                raise Exception(f"Text file does not exist: {text_path}")
-            
-            # Check that settings.yaml exists
-            settings_path = absolute_workspace_path / "settings.yaml"
-            if not settings_path.exists():
-                raise Exception(f"Settings file does not exist: {settings_path}")
-            
-            # Run GraphRAG indexing
-            self.log_processing_step(doc_id, "GRAPHRAG", f"Running GraphRAG indexing on {absolute_workspace_path}")
-            
-            # Use full path to GraphRAG in venv
-            venv_graphrag = Path(__file__).parent / "venv" / "bin" / "graphrag"
-            command = [str(venv_graphrag), "index", "--root", str(absolute_workspace_path)]
-            
-            # Run from project root directory
-            project_root = Path(__file__).parent.resolve()
-            
-            self.log_processing_step(doc_id, "GRAPHRAG", f"Command: {' '.join(command)}")
-            self.log_processing_step(doc_id, "GRAPHRAG", f"Working directory: {project_root}")
-            
-            result = subprocess.run(
-                command, 
-                capture_output=True, 
-                text=True, 
-                cwd=str(project_root)
-            )
-            
-            if result.returncode != 0:
-                error_msg = f"GraphRAG failed: {result.stderr}"
-                self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
-                # Also log stdout for debugging
-                if result.stdout:
-                    self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {result.stdout}", "INFO")
-                raise Exception(error_msg)
-            
-            # Log success
-            self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
-            if result.stdout:
-                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {result.stdout}", "INFO")
-            
-            # Update processing time
-            processing_time = (datetime.now() - start_time).total_seconds()
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE documents 
-                SET processing_time = ?
-                WHERE id = ?
-            """, (int(processing_time), doc_id))
-            conn.commit()
-            conn.close()
-            
-            # Mark as completed
-            self.update_document_status(doc_id, DocumentStatus.COMPLETED)
-            self.log_processing_step(doc_id, "COMPLETE", f"Processing completed in {processing_time:.2f} seconds")
+            # Process document with uploaded file
+            self._process_document_core(doc_id, workspace_path, uploaded_file.getbuffer(), uploaded_file.name)
             
         except Exception as e:
             error_msg = str(e)
@@ -386,19 +404,16 @@ class GraphRAGProcessor:
     def fix_workspace_paths(self):
         """Fix relative workspace paths to absolute paths in existing documents."""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, workspace_path FROM documents WHERE workspace_path NOT LIKE '/%'")
-            docs = cursor.fetchall()
+            with self.db_manager as cursor:
+                cursor.execute("SELECT id, workspace_path FROM documents WHERE workspace_path NOT LIKE '/%'")
+                docs = cursor.fetchall()
+                
+                for doc_id, workspace_path in docs:
+                    # Convert relative to absolute path
+                    abs_path = Path(workspace_path).resolve()
+                    cursor.execute("UPDATE documents SET workspace_path = ? WHERE id = ?", (str(abs_path), doc_id))
+                    logger.info(f"Fixed workspace path for {doc_id}: {workspace_path} -> {abs_path}")
             
-            for doc_id, workspace_path in docs:
-                # Convert relative to absolute path
-                abs_path = Path(workspace_path).resolve()
-                cursor.execute("UPDATE documents SET workspace_path = ? WHERE id = ?", (str(abs_path), doc_id))
-                logger.info(f"Fixed workspace path for {doc_id}: {workspace_path} -> {abs_path}")
-            
-            conn.commit()
-            conn.close()
             logger.info(f"Fixed {len(docs)} workspace paths")
             
         except Exception as e:
@@ -407,27 +422,20 @@ class GraphRAGProcessor:
     def reprocess_failed_document(self, doc_id: str) -> str:
         """Reprocess a failed document."""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT workspace_path, display_name, original_filename FROM documents WHERE id = ? AND status = 'ERROR'", (doc_id,))
-            result = cursor.fetchone()
-            conn.close()
-            
-            if not result:
-                return f"❌ Document {doc_id} not found or not in ERROR status"
-            
-            workspace_path, display_name, original_filename = result
-            workspace_path = Path(workspace_path)
-            
-            # Check if the input file exists
-            input_path = workspace_path / "input" / original_filename
-            if not input_path.exists():
-                return f"❌ Original file not found: {input_path}"
+            with self.db_manager as cursor:
+                cursor.execute("SELECT workspace_path, display_name FROM documents WHERE id = ? AND status = ?", (doc_id, DocumentStatus.ERROR))
+                result = cursor.fetchone()
+                
+                if not result:
+                    return f"❌ Document {doc_id} not found or not in ERROR status"
+                
+                workspace_path = Path(result[0])
+                display_name = result[1]
             
             # Reset status to PROCESSING
             self.update_document_status(doc_id, DocumentStatus.PROCESSING, None)
             
-            # Start background processing directly without mock file
+            # Start background processing for reprocessing
             thread = threading.Thread(
                 target=self.reprocess_document_background,
                 args=(doc_id, workspace_path, display_name)
@@ -442,78 +450,11 @@ class GraphRAGProcessor:
             logger.error(error_msg)
             return error_msg
     
-    def reprocess_document_background(self, doc_id: str, workspace_path: Path, display_name: str):
+    def reprocess_document_background(self, doc_id: str, workspace_path: Path, _display_name: str):
         """Reprocess document in background thread without file upload."""
         try:
-            start_time = datetime.now()
-            
-            # Validate workspace before running GraphRAG
-            self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
-            absolute_workspace_path = workspace_path.resolve()
-            
-            # Check that workspace and required directories exist
-            if not absolute_workspace_path.exists():
-                raise Exception(f"Workspace directory does not exist: {absolute_workspace_path}")
-            
-            input_dir = absolute_workspace_path / "input"
-            if not input_dir.exists():
-                raise Exception(f"Input directory does not exist: {input_dir}")
-            
-            # Check that a text file exists in input directory
-            text_files = list(input_dir.glob("*.txt"))
-            if not text_files:
-                raise Exception(f"No text files found in input directory: {input_dir}")
-            
-            # Check that settings.yaml exists
-            settings_path = absolute_workspace_path / "settings.yaml"
-            if not settings_path.exists():
-                raise Exception(f"Settings file does not exist: {settings_path}")
-            
-            # Run GraphRAG indexing
-            self.log_processing_step(doc_id, "GRAPHRAG", f"Running GraphRAG indexing on {absolute_workspace_path}")
-            
-            # Use full path to GraphRAG in venv
-            venv_graphrag = Path(__file__).parent / "venv" / "bin" / "graphrag"
-            command = [str(venv_graphrag), "index", "--root", str(absolute_workspace_path)]
-            
-            # Run from project root directory
-            project_root = Path(__file__).parent.resolve()
-            
-            self.log_processing_step(doc_id, "GRAPHRAG", f"Command: {' '.join(command)}")
-            self.log_processing_step(doc_id, "GRAPHRAG", f"Working directory: {project_root}")
-            
-            result = subprocess.run(
-                command, 
-                capture_output=True, 
-                text=True, 
-                cwd=str(project_root)
-            )
-            
-            if result.returncode != 0:
-                error_msg = f"GraphRAG failed: {result.stderr}"
-                self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
-                # Also log stdout for debugging
-                if result.stdout:
-                    self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {result.stdout}", "INFO")
-                raise Exception(error_msg)
-            
-            # Log success
-            self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
-            if result.stdout:
-                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {result.stdout}", "INFO")
-            
-            # Update status to completed
-            processing_time = int((datetime.now() - start_time).total_seconds())
-            self.update_document_status(doc_id, DocumentStatus.COMPLETED, None)
-            
-            # Update processing time
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE documents SET processing_time = ? WHERE id = ?", (processing_time, doc_id))
-            conn.commit()
-            conn.close()
-            
-            self.log_processing_step(doc_id, "COMPLETE", f"Document processing completed in {processing_time} seconds")
+            # Process document without file upload (reprocessing existing)
+            self._process_document_core(doc_id, workspace_path)
             
         except Exception as e:
             error_msg = f"Error reprocessing document {doc_id}: {str(e)}"
@@ -533,21 +474,18 @@ class GraphRAGProcessor:
             workspace_path = self.create_workspace(doc_id)
             
             # Add to database
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO documents (id, display_name, original_filename, status, workspace_path, file_size)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                doc_id, 
-                display_name, 
-                uploaded_file.name, 
-                DocumentStatus.PROCESSING,
-                str(workspace_path.resolve()),
-                len(uploaded_file.getbuffer())
-            ))
-            conn.commit()
-            conn.close()
+            with self.db_manager as cursor:
+                cursor.execute("""
+                    INSERT INTO documents (id, display_name, original_filename, status, workspace_path, file_size)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    doc_id, 
+                    display_name, 
+                    uploaded_file.name, 
+                    DocumentStatus.PROCESSING,
+                    str(workspace_path.resolve()),
+                    len(uploaded_file.getbuffer())
+                ))
             
             # Start background processing
             thread = threading.Thread(
@@ -570,14 +508,11 @@ class GraphRAGProcessor:
             return pd.DataFrame(), pd.DataFrame()
         
         try:
-            conn = sqlite3.connect(DB_PATH)
-            placeholders = ','.join('?' for _ in selected_doc_ids)
-            query = f"SELECT id, workspace_path, display_name FROM documents WHERE id IN ({placeholders}) AND status = 'COMPLETED'"
-            
-            cursor = conn.cursor()
-            cursor.execute(query, selected_doc_ids)
-            docs = cursor.fetchall()
-            conn.close()
+            with self.db_manager as cursor:
+                placeholders = ','.join('?' for _ in selected_doc_ids)
+                query = f"SELECT id, workspace_path, display_name FROM documents WHERE id IN ({placeholders}) AND status = ?"
+                cursor.execute(query, selected_doc_ids + [DocumentStatus.COMPLETED])
+                docs = cursor.fetchall()
             
             if not docs:
                 return pd.DataFrame(), pd.DataFrame()
@@ -640,12 +575,14 @@ class GraphRAGProcessor:
         """Delete a document and its workspace."""
         try:
             # Get workspace path
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT workspace_path FROM documents WHERE id = ?", (doc_id,))
-            result = cursor.fetchone()
-            
-            if result:
+            with self.db_manager as cursor:
+                cursor.execute("SELECT workspace_path FROM documents WHERE id = ?", (doc_id,))
+                result = cursor.fetchone()
+                
+                if not result:
+                    logger.warning(f"Document not found: {doc_id}")
+                    return False
+                
                 workspace_path = Path(result[0])
                 
                 # Delete workspace directory
@@ -653,18 +590,11 @@ class GraphRAGProcessor:
                     shutil.rmtree(workspace_path)
                     logger.info(f"Deleted workspace: {workspace_path}")
                 
-                # Delete from database
-                cursor.execute("DELETE FROM processing_logs WHERE document_id = ?", (doc_id,))
+                # Delete from database (CASCADE will handle processing_logs)
                 cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-                conn.commit()
                 
                 logger.info(f"Deleted document: {doc_id}")
-                conn.close()
                 return True
-            else:
-                logger.warning(f"Document not found: {doc_id}")
-                conn.close()
-                return False
                 
         except Exception as e:
             logger.error(f"Error deleting document: {e}")
@@ -673,18 +603,14 @@ class GraphRAGProcessor:
     def get_processing_logs(self, doc_id: str) -> List[Dict]:
         """Get processing logs for a document."""
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT stage, message, timestamp, level
-                FROM processing_logs
-                WHERE document_id = ?
-                ORDER BY timestamp ASC
-            """, (doc_id,))
-            logs = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            return logs
+            with self.db_manager as cursor:
+                cursor.execute("""
+                    SELECT stage, message, timestamp, level
+                    FROM processing_logs
+                    WHERE document_id = ?
+                    ORDER BY timestamp ASC
+                """, (doc_id,))
+                return [dict(row) for row in cursor.fetchall()]
         except sqlite3.Error as e:
             logger.error(f"Error getting processing logs: {e}")
             return []
