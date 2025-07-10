@@ -1,0 +1,23 @@
+[theme]
+# Professional color scheme for GraphRAG UI
+primaryColor = "#4CAF50"                    # Green for primary actions and highlights
+backgroundColor = "#F8F9FA"                 # Very light grey for main background
+secondaryBackgroundColor = "#FFFFFF"       # Pure white for component backgrounds
+textColor = "#2C3E50"                      # Dark blue-grey for primary text
+
+# Typography
+font = "sans serif"                        # Clean, modern font
+
+[server]
+# Performance optimizations
+maxUploadSize = 200                        # Allow larger document uploads (200MB)
+maxMessageSize = 200                       # Handle large responses
+enableXsrfProtection = false              # Disable for local development
+
+[browser]
+# Better browser integration
+gatherUsageStats = false                   # Privacy-focused
+
+[logger]
+# Logging configuration
+level = "info"                           # Appropriate logging level

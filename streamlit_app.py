@@ -46,14 +46,239 @@ from config_manager import check_api_key_availability
 
 # Page configuration
 st.set_page_config(
-    page_title="GraphRAG Multi-Document Explorer",
-    page_icon="📄",
-    layout="wide"
+    page_title="GraphRAG Explorer - Interactive Knowledge Graphs",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/microsoft/graphrag',
+        'Report a bug': "https://github.com/microsoft/graphrag/issues",
+        'About': "# GraphRAG Explorer\nInteractive knowledge graph exploration powered by Microsoft GraphRAG"
+    }
 )
 
-# Title
-st.title("📄 GraphRAG Multi-Document Explorer")
-st.markdown("Upload and analyze multiple documents to build interactive knowledge graphs")
+# Custom CSS for professional styling - Version 2.0
+st.markdown("""
+<style>
+    /* Import Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    /* Global styles - Force application */
+    .stApp {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+        background-color: #F8F9FA !important;
+    }
+    
+    /* Force main container styling */
+    .main .block-container {
+        padding-top: 1rem !important;
+        max-width: none !important;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Custom header styling - Force visibility */
+    .main-header {
+        background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%) !important;
+        padding: 1.5rem 2rem !important;
+        border-radius: 12px !important;
+        margin-bottom: 2rem !important;
+        box-shadow: 0 4px 20px rgba(76, 175, 80, 0.15) !important;
+        width: 100% !important;
+        display: block !important;
+        position: relative !important;
+        z-index: 100 !important;
+    }
+    
+    .main-header h1 {
+        color: white !important;
+        font-weight: 600;
+        font-size: 2.5rem;
+        margin: 0;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .main-header p {
+        color: rgba(255, 255, 255, 0.9) !important;
+        font-size: 1.1rem;
+        margin: 0.5rem 0 0 0;
+        font-weight: 400;
+    }
+    
+    /* Sidebar enhancements */
+    .css-1d391kg {
+        background-color: #FFFFFF;
+        border-right: 1px solid #E0E0E0;
+    }
+    
+    /* Button styling */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-family: 'Inter', sans-serif;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
+    /* Primary button styling */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #4CAF50 0%, #45A049 100%);
+        color: white;
+    }
+    
+    /* Container styling */
+    .element-container {
+        margin-bottom: 1rem;
+    }
+    
+    /* Metric cards */
+    .metric-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        margin: 0.5rem 0;
+        border-left: 4px solid #4CAF50;
+    }
+    
+    /* Success/error message styling */
+    .stSuccess {
+        border-radius: 8px;
+        border-left: 4px solid #4CAF50;
+    }
+    
+    .stError {
+        border-radius: 8px;
+        border-left: 4px solid #F44336;
+    }
+    
+    .stWarning {
+        border-radius: 8px;
+        border-left: 4px solid #FF9800;
+    }
+    
+    .stInfo {
+        border-radius: 8px;
+        border-left: 4px solid #2196F3;
+    }
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        font-weight: 500;
+        border-radius: 8px;
+    }
+    
+    /* Text input styling */
+    .stTextInput > div > div > input {
+        border-radius: 8px;
+        border: 2px solid #E0E0E0;
+        transition: border-color 0.2s ease;
+    }
+    
+    .stTextInput > div > div > input:focus {
+        border-color: #4CAF50;
+        box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
+    }
+    
+    /* Selectbox styling */
+    .stSelectbox > div > div {
+        border-radius: 8px;
+    }
+    
+    /* Multiselect styling */
+    .stMultiSelect > div > div {
+        border-radius: 8px;
+    }
+    
+    /* Slider styling */
+    .stSlider > div > div > div > div {
+        background-color: #4CAF50;
+    }
+    
+    /* Progress bar styling */
+    .stProgress > div > div > div {
+        background-color: #4CAF50;
+        border-radius: 4px;
+    }
+    
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+    }
+    
+    /* Spinner customization */
+    .stSpinner > div {
+        border-top-color: #4CAF50;
+    }
+    
+    /* Custom spacing */
+    .section-header {
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin: 1.5rem 0 1rem 0;
+        color: #2C3E50;
+        border-bottom: 2px solid #E0E0E0;
+        padding-bottom: 0.5rem;
+    }
+    
+    /* Loading animation */
+    @keyframes pulse {
+        0% { opacity: 0.6; }
+        50% { opacity: 1; }
+        100% { opacity: 0.6; }
+    }
+    
+    .loading-pulse {
+        animation: pulse 2s infinite;
+    }
+    
+    /* Responsive design */
+    @media (max-width: 768px) {
+        .main-header h1 {
+            font-size: 2rem;
+        }
+        
+        .main-header {
+            padding: 1rem;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Force cache invalidation
+if "ui_version" not in st.session_state:
+    st.session_state.ui_version = "2.0"
+
+# Test CSS Application
+st.markdown("""
+<div style="background: red; padding: 10px; margin: 10px 0;">
+    🚨 CSS Test Block - If you see this with a red background, HTML/CSS is working!
+</div>
+""", unsafe_allow_html=True)
+
+# Enhanced header with custom styling and debugging
+st.markdown(f"""
+<div class="main-header" style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1.5rem 2rem; border-radius: 12px; margin-bottom: 2rem; box-shadow: 0 4px 20px rgba(76, 175, 80, 0.15);">
+    <h1 style="color: white; font-weight: 600; font-size: 2.5rem; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">🧠 GraphRAG Explorer</h1>
+    <p style="color: rgba(255, 255, 255, 0.9); font-size: 1.1rem; margin: 0.5rem 0 0 0; font-weight: 400;">Interactive knowledge graph exploration and document analysis</p>
+    <small style="color: rgba(255, 255, 255, 0.7);">UI Version: {st.session_state.ui_version}</small>
+</div>
+""", unsafe_allow_html=True)
 
 # Initialize application
 processor.init_db()
@@ -223,92 +448,105 @@ def create_plotly_graph(G, layout_type="spring"):
 
 def render_document_management_section():
     """Render document management section in sidebar."""
-    st.sidebar.subheader("📄 Document Management")
+    # Enhanced sidebar header with custom styling
+    st.sidebar.markdown('<p class="section-header">📄 Document Management</p>', unsafe_allow_html=True)
     
-    # Upload new document
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload a new document",
-        type=["pdf", "txt"],
-        accept_multiple_files=False
-    )
+    # Upload new document with enhanced styling
+    with st.sidebar.container():
+        st.markdown("**Upload New Document**")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF or TXT file",
+            type=["pdf", "txt"],
+            accept_multiple_files=False,
+            help="Supported formats: PDF, TXT (max 200MB)"
+        )
     
     if uploaded_file:
-        display_name = st.sidebar.text_input(
-            "Document name (optional)",
-            value=uploaded_file.name,
-            key="doc_name"
-        )
-        
-        if st.sidebar.button("📤 Process Document"):
-            with st.spinner("Starting document processing..."):
-                result = process_new_document(uploaded_file, display_name)
-                st.sidebar.success(result)
-                st.rerun()
+        with st.sidebar.container():
+            display_name = st.text_input(
+                "Document name (optional)",
+                value=uploaded_file.name,
+                key="doc_name",
+                help="Custom name for easier identification"
+            )
+            
+            if st.button("📤 Process Document", type="primary", use_container_width=True):
+                with st.spinner("🔄 Starting document processing..."):
+                    result = process_new_document(uploaded_file, display_name)
+                    st.success(result)
+                    st.rerun()
     
-    # Show processing status
+    # Show processing status with enhanced styling
     all_docs = processor.get_all_documents()
     processing_docs = [doc for doc in all_docs if doc['status'] == 'PROCESSING']
     failed_docs = [doc for doc in all_docs if doc['status'] == 'ERROR']
     
     if processing_docs:
-        st.sidebar.subheader("⏳ Processing Status")
+        st.sidebar.markdown('<p class="section-header">⏳ Processing Status</p>', unsafe_allow_html=True)
         for doc in processing_docs:
-            st.sidebar.info(f"Processing: {doc['display_name']}")
+            with st.sidebar.container():
+                st.markdown(f'<div class="loading-pulse">🔄 Processing: **{doc["display_name"]}**</div>', unsafe_allow_html=True)
+                st.progress(0.5)  # Indeterminate progress
     
     # Show failed documents with retry option
     if failed_docs:
-        st.sidebar.subheader("❌ Failed Documents")
+        st.sidebar.markdown('<p class="section-header">❌ Failed Documents</p>', unsafe_allow_html=True)
         for doc in failed_docs:
-            col1, col2 = st.sidebar.columns([3, 1])
-            with col1:
-                st.write(f"❌ {doc['display_name']}")
+            with st.sidebar.expander(f"❌ {doc['display_name']}", expanded=False):
                 if doc['error_message']:
-                    st.caption(f"Error: {doc['error_message'][:50]}...")
-            with col2:
-                if st.button("🔄", key=f"retry_{doc['id']}", help="Retry processing"):
-                    with st.spinner("Retrying..."):
+                    st.error(f"Error: {doc['error_message'][:100]}...")
+                
+                if st.button("🔄 Retry Processing", key=f"retry_{doc['id']}", type="secondary", use_container_width=True):
+                    with st.spinner("🔄 Retrying processing..."):
                         result = reprocess_failed_document(doc['id'])
                         st.sidebar.success(result)
                         st.rerun()
     
-    # Document list and selection
+    # Document list and selection with enhanced styling
     processed_docs = get_processed_documents()
     
     if processed_docs:
-        st.sidebar.subheader("📋 Select Documents")
+        st.sidebar.markdown('<p class="section-header">📋 Select Documents</p>', unsafe_allow_html=True)
         
-        # Create options for multiselect
+        # Create options for multiselect with better formatting
         doc_options = {}
         for doc in processed_docs:
-            label = f"{doc['display_name']} ({doc['created_at'][:10]})"
+            label = f"📄 {doc['display_name']} ({doc['created_at'][:10]})"
             doc_options[label] = doc['id']
         
-        selected_doc_names = st.sidebar.multiselect(
-            "Choose documents to explore:",
-            options=doc_options.keys(),
-            key="selected_docs"
-        )
+        with st.sidebar.container():
+            selected_doc_names = st.multiselect(
+                "Choose documents to explore:",
+                options=doc_options.keys(),
+                key="selected_docs",
+                help=f"Select from {len(processed_docs)} available document(s)"
+            )
         
         # Get selected document IDs
         selected_doc_ids = [doc_options[name] for name in selected_doc_names]
         
-        # Document management buttons
+        # Document management buttons with enhanced styling
         if selected_doc_names:
-            st.sidebar.subheader("🔧 Document Actions")
+            st.sidebar.markdown('<p class="section-header">🔧 Document Actions</p>', unsafe_allow_html=True)
             
-            # Show processing logs
-            if st.sidebar.button("📋 View Processing Logs"):
-                st.session_state.show_logs = True
-                st.session_state.log_doc_ids = selected_doc_ids
-            
-            # Delete selected documents
-            if st.sidebar.button("🗑️ Delete Selected", type="secondary"):
-                for doc_id in selected_doc_ids:
-                    if delete_document(doc_id):
-                        st.sidebar.success("Document deleted")
-                    else:
-                        st.sidebar.error("Failed to delete document")
-                st.rerun()
+            with st.sidebar.container():
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Show processing logs
+                    if st.button("📋 Logs", use_container_width=True, help="View processing logs"):
+                        st.session_state.show_logs = True
+                        st.session_state.log_doc_ids = selected_doc_ids
+                
+                with col2:
+                    # Delete selected documents
+                    if st.button("🗑️ Delete", type="secondary", use_container_width=True, help="Delete selected documents"):
+                        for doc_id in selected_doc_ids:
+                            if delete_document(doc_id):
+                                st.success("✅ Document deleted")
+                            else:
+                                st.error("❌ Failed to delete document")
+                        st.rerun()
         
         return selected_doc_ids
     else:
@@ -317,158 +555,202 @@ def render_document_management_section():
 
 def render_graph_controls(entities, relationships):
     """Render graph control section in sidebar."""
-    st.sidebar.subheader("🎛️ Graph Controls")
+    st.sidebar.markdown('<p class="section-header">🎛️ Graph Controls</p>', unsafe_allow_html=True)
     
-    # Filtering controls
+    # Filtering controls with enhanced styling
     if not entities.empty:
-        # Entity type filter
-        entity_types = get_entity_type_options(entities)
-        selected_types = st.sidebar.multiselect(
-            "Entity Types",
-            entity_types,
-            default=entity_types,
-            key="entity_types"
-        )
-        
-        # Degree range filter
-        min_degree, max_degree = get_degree_range(entities)
-        if min_degree < max_degree:
-            degree_range = st.sidebar.slider(
-                "Degree Range",
-                min_value=min_degree,
-                max_value=max_degree,
-                value=(min_degree, max_degree),
-                key="degree_range"
+        with st.sidebar.expander("🔍 Filters", expanded=True):
+            # Entity type filter
+            entity_types = get_entity_type_options(entities)
+            selected_types = st.multiselect(
+                "Entity Types",
+                entity_types,
+                default=entity_types,
+                key="entity_types",
+                help="Filter by entity types to focus your analysis"
             )
-        else:
-            degree_range = (min_degree, max_degree)
+            
+            # Degree range filter
+            min_degree, max_degree = get_degree_range(entities)
+            if min_degree < max_degree:
+                degree_range = st.slider(
+                    "Connection Range",
+                    min_value=min_degree,
+                    max_value=max_degree,
+                    value=(min_degree, max_degree),
+                    key="degree_range",
+                    help="Filter entities by number of connections"
+                )
+            else:
+                degree_range = (min_degree, max_degree)
+            
+            # Search filter
+            search_term = st.text_input(
+                "Search Entities", 
+                key="search",
+                placeholder="Type to search entities...",
+                help="Search for specific entities by name"
+            )
         
-        # Search filter
-        search_term = st.sidebar.text_input("Search Entities", key="search")
-        
-        # Layout options
-        layout_option = st.sidebar.selectbox(
-            "Layout Algorithm",
-            ["barnes_hut", "force_atlas_2", "hierarchical"],
-            index=0,
-            key="layout"
-        )
-        
-        # Performance optimization
-        optimize_graph = st.sidebar.checkbox(
-            "Optimize for Large Graphs (top 100 nodes)",
-            value=len(entities) > 100,
-            key="optimize"
-        )
+        with st.sidebar.expander("⚙️ Layout Settings", expanded=False):
+            # Layout options
+            layout_option = st.selectbox(
+                "Layout Algorithm",
+                ["barnes_hut", "force_atlas_2", "hierarchical"],
+                index=0,
+                key="layout",
+                help="Choose visualization algorithm"
+            )
+            
+            # Performance optimization
+            optimize_graph = st.checkbox(
+                "🚀 Performance Mode",
+                value=len(entities) > 100,
+                key="optimize",
+                help="Show only top 100 most connected nodes for better performance"
+            )
         
         return selected_types, degree_range, search_term, layout_option, optimize_graph
     else:
+        st.sidebar.info("📊 Load documents to see graph controls")
         return [], (0, 0), "", "barnes_hut", False
 
-def render_graph_statistics(entities, relationships, selected_docs):
-    """Render graph statistics section."""
-    st.sidebar.subheader("📊 Graph Statistics")
-    
-    if not entities.empty:
-        # Create NetworkX graph for statistics
-        G = create_networkx_graph(entities, relationships)
-        
-        st.sidebar.metric("Documents Selected", len(selected_docs))
-        st.sidebar.metric("Total Entities", len(entities))
-        st.sidebar.metric("Total Relationships", len(relationships))
-        st.sidebar.metric("Graph Density", f"{nx.density(G):.3f}")
-        st.sidebar.metric("Connected Components", nx.number_connected_components(G))
-        
-        # Show entities by source document
-        if 'source_document' in entities.columns:
-            st.sidebar.subheader("📄 Entities by Document")
-            doc_counts = entities['source_document'].value_counts()
-            for doc, count in doc_counts.items():
-                st.sidebar.metric(f"{doc[:20]}...", count)
 
-def main():
-    """Main Streamlit app."""
+def render_universal_sidebar():
+    """Render universal sidebar with complete document management."""
     
-    # Sidebar - Document Management
-    selected_doc_ids = render_document_management_section()
+    # 1. Document Upload Section
+    st.sidebar.markdown('<p class="section-header">📤 Upload Document</p>', unsafe_allow_html=True)
     
-    # Show processing logs if requested
-    if st.session_state.get('show_logs', False):
-        st.subheader("📋 Processing Logs")
+    with st.sidebar.expander("Upload New Document", expanded=False):
+        uploaded_file = st.file_uploader(
+            "Choose a PDF or TXT file",
+            type=["pdf", "txt"],
+            accept_multiple_files=False,
+            help="Supported formats: PDF, TXT (max 200MB)",
+            key="sidebar_upload"
+        )
         
-        if st.button("❌ Close Logs"):
-            st.session_state.show_logs = False
-            st.rerun()
-        
-        # Get all docs for log display
-        all_docs = processor.get_all_documents()
-        
-        for doc_id in st.session_state.get('log_doc_ids', []):
-            logs = processor.get_processing_logs(doc_id)
-            if logs:
-                # Get document name and status
-                doc_name = "Unknown"
-                doc_status = "Unknown"
-                for doc in all_docs:
-                    if doc['id'] == doc_id:
-                        doc_name = doc['display_name']
-                        doc_status = doc['status']
-                        break
-                
-                status_emoji = {
-                    'COMPLETED': '✅',
-                    'PROCESSING': '⏳',
-                    'ERROR': '❌',
-                    'UPLOADED': '📤'
-                }.get(doc_status, '❓')
-                
-                st.markdown(f"**{status_emoji} {doc_name}** ({doc_status})")
-                
-                # Create a formatted display of logs
-                log_text = []
-                for log in logs:
-                    timestamp = log['timestamp']
-                    stage = log['stage']
-                    message = log['message']
-                    level = log['level']
-                    
-                    level_emoji = {
-                        'INFO': 'ℹ️',
-                        'ERROR': '❌',
-                        'WARNING': '⚠️'
-                    }.get(level, 'ℹ️')
-                    
-                    log_text.append(f"{level_emoji} [{timestamp}] {stage}: {message}")
-                
-                st.text_area(
-                    f"Logs for {doc_name}",
-                    value="\n".join(log_text),
-                    height=300,
-                    key=f"logs_{doc_id}"
-                )
-            else:
-                st.info(f"No logs found for document {doc_id}")
-        
-        st.markdown("---")
+        if uploaded_file:
+            display_name = st.text_input(
+                "Document name (optional)",
+                value=uploaded_file.name,
+                key="sidebar_doc_name",
+                help="Custom name for easier identification"
+            )
+            
+            if st.button("📤 Process Document", type="primary", use_container_width=True):
+                with st.spinner("🔄 Starting document processing..."):
+                    result = process_new_document(uploaded_file, display_name)
+                    st.success(result)
+                    st.rerun()
     
-    # Main content area
+    # 2. Processing Status
+    all_docs = get_all_documents()
+    processing_docs = [doc for doc in all_docs if doc['status'] == 'PROCESSING']
+    failed_docs = [doc for doc in all_docs if doc['status'] == 'ERROR']
+    
+    if processing_docs:
+        st.sidebar.markdown('<p class="section-header">⏳ Processing Status</p>', unsafe_allow_html=True)
+        for doc in processing_docs:
+            st.sidebar.markdown(f'<div class="loading-pulse">🔄 Processing: **{doc["display_name"]}**</div>', unsafe_allow_html=True)
+            st.sidebar.progress(0.5)  # Indeterminate progress
+    
+    if failed_docs:
+        st.sidebar.markdown('<p class="section-header">❌ Failed Documents</p>', unsafe_allow_html=True)
+        for doc in failed_docs:
+            with st.sidebar.expander(f"❌ {doc['display_name']}", expanded=False):
+                if doc['error_message']:
+                    st.error(f"Error: {doc['error_message'][:100]}...")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🔄 Retry", key=f"retry_sidebar_{doc['id']}", help="Retry processing"):
+                        with st.spinner("🔄 Retrying processing..."):
+                            result = reprocess_failed_document(doc['id'])
+                            st.success(result)
+                            st.rerun()
+                with col2:
+                    if st.button("🗑️ Delete", key=f"delete_sidebar_{doc['id']}", type="secondary", help="Delete document"):
+                        if delete_document(doc['id']):
+                            st.success("✅ Document deleted")
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to delete")
+    
+    # 3. Document Selection
+    processed_docs = get_processed_documents()
+    
+    if processed_docs:
+        st.sidebar.markdown('<p class="section-header">📄 Select Documents</p>', unsafe_allow_html=True)
+        
+        # Create options for multiselect with better formatting
+        doc_options = {}
+        for doc in processed_docs:
+            label = f"📄 {doc['display_name']} ({doc['created_at'][:10]})"
+            doc_options[label] = doc['id']
+        
+        selected_doc_names = st.sidebar.multiselect(
+            "Choose documents to analyze:",
+            options=doc_options.keys(),
+            key="universal_selected_docs",
+            help=f"Select from {len(processed_docs)} available document(s)"
+        )
+        
+        # Get selected document IDs
+        selected_doc_ids = [doc_options[name] for name in selected_doc_names]
+        
+        if selected_doc_ids:
+            # Show selected document info and actions
+            st.sidebar.success(f"✅ {len(selected_doc_ids)} document(s) selected")
+            
+            # Document actions
+            with st.sidebar.expander("🔧 Document Actions", expanded=False):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("📋 View Logs", help="View processing logs", use_container_width=True):
+                        st.session_state.show_logs = True
+                        st.session_state.log_doc_ids = selected_doc_ids
+                
+                with col2:
+                    if st.button("🗑️ Delete Selected", type="secondary", help="Delete selected documents", use_container_width=True):
+                        for doc_id in selected_doc_ids:
+                            if delete_document(doc_id):
+                                st.success("✅ Document deleted")
+                            else:
+                                st.error("❌ Failed to delete document")
+                        st.rerun()
+        else:
+            st.sidebar.info("👆 Select documents to start analyzing")
+        
+        return selected_doc_ids
+    else:
+        st.sidebar.info("📤 No documents available. Upload your first document above.")
+        return []
+
+def render_graph_tab(selected_doc_ids):
+    """Render the Graph Explorer tab with embedded controls."""
     if not selected_doc_ids:
-        st.info("👈 Select one or more processed documents from the sidebar to begin exploring.")
+        st.info("👈 Select documents from the sidebar to explore the knowledge graph.")
         st.markdown("""
-        ### Getting Started
-        1. **Upload a document** using the file uploader in the sidebar
-        2. **Wait for processing** to complete (this may take several minutes)
-        3. **Select documents** to explore from the processed documents list
-        4. **Explore the graph** using the interactive visualization
+        ### 🔍 Graph Explorer
+        
+        This tab provides an interactive visualization of your document knowledge graphs:
+        
+        - **Interactive Network**: Explore entities and their relationships
+        - **Dynamic Filtering**: Filter by entity types, connections, and search terms
+        - **Entity Details**: Click nodes to see detailed information
+        - **Multiple Layouts**: Choose from different visualization algorithms
         """)
         return
     
     # Load data for selected documents
-    with st.spinner("Loading and merging graph data..."):
+    with st.spinner("🔄 Loading and merging graph data..."):
         entities, relationships = load_multi_document_data(selected_doc_ids)
     
     if entities.empty:
-        st.warning("No graph data found for the selected documents.")
+        st.warning("⚠️ No graph data found for the selected documents.")
         return
     
     # Get document names for display
@@ -478,61 +760,116 @@ def main():
         if doc['id'] in selected_doc_ids:
             selected_doc_names.append(doc['display_name'])
     
-    st.header(f"📊 Exploring: {', '.join(selected_doc_names)}")
-    st.success(f"✅ Loaded {len(entities)} entities and {len(relationships)} relationships")
+    # Header with document info
+    st.markdown(f"""<div style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1rem 2rem; border-radius: 8px; margin-bottom: 1rem;">
+        <h3 style="color: white; margin: 0;">🔍 Exploring: {', '.join(selected_doc_names)}</h3>
+        <p style="color: rgba(255,255,255,0.9); margin: 0.5rem 0 0 0;">✅ {len(entities)} entities • {len(relationships)} relationships</p>
+    </div>""", unsafe_allow_html=True)
     
-    # Sidebar - Graph Controls
-    selected_types, degree_range, search_term, layout_option, optimize_graph = render_graph_controls(
-        entities, relationships
-    )
-    
-    # Sidebar - Statistics
-    render_graph_statistics(entities, relationships, selected_doc_ids)
-    
-    # Main content - Graph visualization
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        st.subheader("🔗 Interactive Knowledge Graph")
+    # Graph Controls Panel - Embedded in tab
+    with st.expander("🎛️ Graph Controls", expanded=True):
+        col1, col2, col3 = st.columns([2, 2, 1])
         
-        # Optimize for large graphs if enabled
-        display_entities = entities
-        display_relationships = relationships
-        
-        if optimize_graph:
-            display_entities, display_relationships = optimize_for_large_graph(
-                entities, relationships, threshold=100
+        with col1:
+            st.markdown("**🔍 Filters**")
+            # Entity type filter
+            entity_types = get_entity_type_options(entities)
+            selected_types = st.multiselect(
+                "Entity Types",
+                entity_types,
+                default=entity_types,
+                key="graph_entity_types",
+                help="Filter by entity types to focus your analysis"
             )
-            st.info(f"📈 Displaying top {len(display_entities)} entities for performance")
+            
+            # Search filter
+            search_term = st.text_input(
+                "Search Entities", 
+                key="graph_search_term",
+                placeholder="Type to search entities...",
+                help="Search for specific entities by name"
+            )
         
-        # Create PyVis network
-        try:
-            with st.spinner("Creating interactive network..."):
-                net = create_pyvis_network(
-                    display_entities,
-                    display_relationships,
-                    entity_filter=selected_types if selected_types else None,
-                    degree_range=degree_range,
-                    search_term=search_term if search_term else None,
-                    layout=layout_option
+        with col2:
+            st.markdown("**⚙️ Layout Settings**")
+            # Layout options
+            layout_option = st.selectbox(
+                "Layout Algorithm",
+                ["barnes_hut", "force_atlas_2", "hierarchical"],
+                index=0,
+                key="graph_layout",
+                help="Choose visualization algorithm"
+            )
+            
+            # Degree range filter
+            min_degree, max_degree = get_degree_range(entities)
+            if min_degree < max_degree:
+                degree_range = st.slider(
+                    "Connection Range",
+                    min_value=min_degree,
+                    max_value=max_degree,
+                    value=(min_degree, max_degree),
+                    key="graph_degree_range",
+                    help="Filter entities by number of connections"
                 )
-                
-                # Render network
-                html_content = render_pyvis_network(net)
-                
-                # Display in Streamlit
-                components.html(html_content, height=600)
-        except Exception as e:
-            st.error(f"Error creating graph: {e}")
-            st.info("Try adjusting the filters or switching to a different layout algorithm.")
-    
-    with col2:
-        st.subheader("🔍 Entity Explorer")
+            else:
+                degree_range = (min_degree, max_degree)
         
-        # Show entity details
-        if not entities.empty:
+        with col3:
+            st.markdown("**🚀 Performance**")
+            # Performance optimization
+            optimize_graph = st.checkbox(
+                "Performance Mode",
+                value=len(entities) > 100,
+                key="graph_optimize",
+                help="Show only top 100 most connected nodes for better performance"
+            )
+            
+            # Create NetworkX graph for statistics
+            G = create_networkx_graph(entities, relationships)
+            
+            st.metric("👥 Entities", len(entities))
+            st.metric("🔗 Relations", len(relationships))
+            st.metric("🔴 Components", nx.number_connected_components(G))
+    
+    # Optimize for large graphs if enabled
+    display_entities = entities
+    display_relationships = relationships
+    
+    if optimize_graph:
+        display_entities, display_relationships = optimize_for_large_graph(
+            entities, relationships, threshold=100
+        )
+        st.info(f"📈 Displaying top {len(display_entities)} entities for performance")
+    
+    # Create PyVis network
+    try:
+        with st.spinner("🔄 Creating interactive network..."):
+            net = create_pyvis_network(
+                display_entities,
+                display_relationships,
+                entity_filter=selected_types if selected_types else None,
+                degree_range=degree_range,
+                search_term=search_term if search_term else None,
+                layout=layout_option
+            )
+            
+            # Render network
+            html_content = render_pyvis_network(net)
+            
+            # Display in Streamlit - full width
+            components.html(html_content, height=700)
+    except Exception as e:
+        st.error(f"❌ Error creating graph: {e}")
+        st.info("💡 Try adjusting the filters or switching to a different layout algorithm.")
+    
+    # Entity search and details section
+    with st.expander("🔍 Entity Search & Details", expanded=False):
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
             # Entity search
-            entity_search = st.text_input("Search for specific entity:", key="entity_search")
+            entity_search = st.text_input("Search for specific entity:", key="graph_entity_search")
             
             if entity_search:
                 # Filter entities by search term
@@ -544,7 +881,7 @@ def main():
                     selected_entity = st.selectbox(
                         "Select entity:",
                         filtered_entities['title'].tolist(),
-                        key="selected_entity"
+                        key="graph_selected_entity"
                     )
                     
                     # Show entity details
@@ -554,43 +891,160 @@ def main():
                     st.markdown(f"**Source:** {entity_data.get('source_document', 'Unknown')}")
                     if 'description' in entity_data:
                         st.markdown(f"**Description:** {entity_data['description']}")
-                    
-                    # Show related entities
-                    if not relationships.empty:
-                        related_rels = relationships[
-                            (relationships['source'] == selected_entity) | 
-                            (relationships['target'] == selected_entity)
-                        ]
-                        
-                        if not related_rels.empty:
-                            st.markdown("**Related Entities:**")
-                            for _, rel in related_rels.head(10).iterrows():
-                                other_entity = rel['target'] if rel['source'] == selected_entity else rel['source']
-                                st.markdown(f"• {other_entity}")
                 else:
                     st.info("No entities found matching your search.")
-            
+        
+        with col2:
             # Show sample entities
-            st.markdown("**Sample Entities:**")
-            sample_entities = entities.sample(min(10, len(entities)))
-            for _, entity in sample_entities.iterrows():
-                source_doc = entity.get('source_document', 'Unknown')[:20]
-                st.markdown(f"• **{entity['title']}** ({source_doc}...)")
+            if not entities.empty:
+                st.markdown("**Sample Entities:**")
+                sample_entities = entities.sample(min(8, len(entities)))
+                for _, entity in sample_entities.iterrows():
+                    source_doc = entity.get('source_document', 'Unknown')[:15]
+                    st.markdown(f"• **{entity['title']}** ({source_doc}...)")
+
+
+def main():
+    """Main Streamlit app with tab-based navigation."""
+    
+    # Universal sidebar for document selection
+    selected_doc_ids = render_universal_sidebar()
+    
+    # Initialize processor and handle logs if requested
+    processor.init_db()
+    
+    if st.session_state.get('show_logs', False):
+        render_processing_logs()
+        return
+    
+    # Main tab navigation - only show if documents are selected
+    if selected_doc_ids:
+        tab_graph, tab_chat = st.tabs([
+            "🔍 Graph Explorer", 
+            "💬 Chat Assistant"
+        ])
         
-        # Query interface
-        st.subheader("💬 Document Chat")
+        with tab_graph:
+            render_graph_tab(selected_doc_ids)
         
-        # Initialize chat history in session state
-        if "chat_history" not in st.session_state:
-            st.session_state.chat_history = []
+        with tab_chat:
+            render_chat_tab(selected_doc_ids)
+    else:
+        # Welcome screen when no documents selected
+        st.info("👈 Select documents from the sidebar to begin exploring.")
+        st.markdown("""
+        ### 🧠 GraphRAG Explorer
         
-        # Query method selection
+        **Get started by:**
+        1. **Upload documents** using the sidebar upload interface
+        2. **Wait for processing** to complete (this may take several minutes)  
+        3. **Select documents** to explore from your document library
+        4. **Analyze** using the Graph Explorer or Chat Assistant
+        
+        ### Features Available:
+        - **🔍 Graph Explorer**: Interactive knowledge graph visualization
+        - **💬 Chat Assistant**: AI-powered document Q&A with multiple search methods
+        """)
+
+def render_processing_logs():
+    """Render processing logs modal."""
+    st.subheader("📋 Processing Logs")
+    
+    if st.button("❌ Close Logs"):
+        st.session_state.show_logs = False
+        st.rerun()
+    
+    # Get all docs for log display
+    all_docs = processor.get_all_documents()
+    
+    for doc_id in st.session_state.get('log_doc_ids', []):
+        logs = processor.get_processing_logs(doc_id)
+        if logs:
+            # Get document name and status
+            doc_name = "Unknown"
+            doc_status = "Unknown"
+            for doc in all_docs:
+                if doc['id'] == doc_id:
+                    doc_name = doc['display_name']
+                    doc_status = doc['status']
+                    break
+            
+            status_emoji = {
+                'COMPLETED': '✅',
+                'PROCESSING': '⏳',
+                'ERROR': '❌',
+                'UPLOADED': '📤'
+            }.get(doc_status, '❓')
+            
+            st.markdown(f"**{status_emoji} {doc_name}** ({doc_status})")
+            
+            # Create a formatted display of logs
+            log_text = []
+            for log in logs:
+                timestamp = log['timestamp']
+                stage = log['stage']
+                message = log['message']
+                level = log['level']
+                
+                level_emoji = {
+                    'INFO': 'ℹ️',
+                    'ERROR': '❌',
+                    'WARNING': '⚠️'
+                }.get(level, 'ℹ️')
+                
+                log_text.append(f"{level_emoji} [{timestamp}] {stage}: {message}")
+            
+            st.text_area(
+                f"Logs for {doc_name}",
+                value="\n".join(log_text),
+                height=300,
+                key=f"logs_{doc_id}"
+            )
+        else:
+            st.info(f"No logs found for document {doc_id}")
+    
+    st.markdown("---")
+
+def render_chat_tab(selected_doc_ids):
+    """Render the Chat Assistant tab."""
+    if not selected_doc_ids:
+        st.info("👈 Select documents from the sidebar to start chatting.")
+        st.markdown("""
+        ### 💬 Chat Assistant
+        
+        Ask questions about your selected documents using advanced GraphRAG search methods:
+        
+        - **Local Search**: Find specific details and facts
+        - **Global Search**: Discover themes and patterns  
+        - **Drift Search**: Contextual exploration
+        - **Basic Search**: Simple keyword matching
+        """)
+        return
+    
+    # Get document names for display
+    processed_docs = get_processed_documents()
+    selected_doc_names = [doc['display_name'] for doc in processed_docs if doc['id'] in selected_doc_ids]
+    
+    # Header with document info
+    st.markdown(f"""<div style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1rem 2rem; border-radius: 8px; margin-bottom: 1rem;">
+        <h3 style="color: white; margin: 0;">💬 Chat with: {', '.join(selected_doc_names)}</h3>
+        <p style="color: rgba(255,255,255,0.9); margin: 0.5rem 0 0 0;">Ask questions about your documents using GraphRAG AI</p>
+    </div>""", unsafe_allow_html=True)
+    
+    
+    # Initialize chat history in session state
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Query method selection
+    col1, col2 = st.columns([3, 1])
+    with col1:
         query_method = st.selectbox(
             "Search Method:",
             options=["local", "global", "drift", "basic"],
             index=0,
             help="Local: specific details, Global: themes/patterns, Drift: contextual search, Basic: simple search",
-            key="query_method"
+            key="chat_query_method"
         )
         
         # Query form to handle input properly
@@ -738,6 +1192,10 @@ def main():
         else:
             st.info("Start a conversation by asking a question about your selected documents!")
     
+
+
+
+
 
 if __name__ == "__main__":
     main()
