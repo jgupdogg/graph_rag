@@ -53,6 +53,9 @@ chunks:
   size: 500
   overlap: 50
   group_by_columns: [id]
+  # Enable section metadata preservation
+  prepend_metadata: true
+  chunk_size_includes_metadata: true
 
 ### Output/storage settings ###
 ## If blob storage is specified in the following four sections,
@@ -150,3 +153,51 @@ basic_search:
   chat_model_id: default_chat_model
   embedding_model_id: default_embedding_model
   prompt: "prompts/basic_search_system_prompt.txt"
+
+### Enhanced Document Processing Settings ###
+## AI-driven document classification and context-aware chunking
+
+document_processing:
+  classification:
+    enabled: true
+    cache_results: true
+    api_model: "gpt-3.5-turbo"
+    
+  summarization:
+    enabled: true
+    cache_results: true
+    api_model: "gpt-3.5-turbo"
+    max_summary_length: 150
+    
+  strategies:
+    technical_specification:
+      chunk_size: 750
+      overlap: 100
+      include_cross_references: true
+      extract_technical_terms: true
+      
+    business_document:
+      chunk_size: 500
+      overlap: 75
+      preserve_metrics: true
+      link_recommendations: true
+      
+    legal_contract:
+      chunk_size: 400
+      overlap: 50
+      maintain_clause_refs: true
+      preserve_definitions: true
+      
+    manual_procedure:
+      chunk_size: 600
+      overlap: 75
+      include_cross_references: true
+      
+    research_paper:
+      chunk_size: 600
+      overlap: 75
+      include_cross_references: true
+      
+    correspondence:
+      chunk_size: 400
+      overlap: 25
