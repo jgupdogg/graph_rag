@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import logging
+import os
+import signal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -54,6 +56,70 @@ class DocumentStatus:
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     ERROR = "ERROR"
+    CANCELLED = "CANCELLED"
+
+class ProcessingThreadRegistry:
+    """Thread-safe registry for tracking active processing threads and subprocesses."""
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._threads = {}  # doc_id -> thread
+        self._subprocesses = {}  # doc_id -> subprocess.Popen
+        self._cancellation_flags = {}  # doc_id -> threading.Event
+    
+    def register_thread(self, doc_id: str, thread: threading.Thread):
+        """Register a processing thread."""
+        with self._lock:
+            self._threads[doc_id] = thread
+            self._cancellation_flags[doc_id] = threading.Event()
+    
+    def register_subprocess(self, doc_id: str, process: subprocess.Popen):
+        """Register a subprocess."""
+        with self._lock:
+            self._subprocesses[doc_id] = process
+    
+    def unregister(self, doc_id: str):
+        """Unregister thread and subprocess for a document."""
+        with self._lock:
+            self._threads.pop(doc_id, None)
+            self._subprocesses.pop(doc_id, None)
+            self._cancellation_flags.pop(doc_id, None)
+    
+    def request_cancellation(self, doc_id: str) -> bool:
+        """Request cancellation for a document processing."""
+        with self._lock:
+            if doc_id in self._cancellation_flags:
+                self._cancellation_flags[doc_id].set()
+                # Terminate subprocess if exists
+                if doc_id in self._subprocesses:
+                    try:
+                        process = self._subprocesses[doc_id]
+                        if process.poll() is None:  # Process is still running
+                            process.terminate()
+                            # Give it a moment to terminate gracefully
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()  # Force kill if needed
+                    except Exception as e:
+                        logger.error(f"Error terminating subprocess for {doc_id}: {e}")
+                return True
+            return False
+    
+    def is_cancellation_requested(self, doc_id: str) -> bool:
+        """Check if cancellation was requested for a document."""
+        with self._lock:
+            if doc_id in self._cancellation_flags:
+                return self._cancellation_flags[doc_id].is_set()
+            return False
+    
+    def get_active_threads(self) -> Dict[str, threading.Thread]:
+        """Get all active threads."""
+        with self._lock:
+            return self._threads.copy()
+
+# Global thread registry
+thread_registry = ProcessingThreadRegistry()
 
 class GraphRAGProcessor:
     """Main class for handling GraphRAG multi-document processing."""
@@ -74,21 +140,71 @@ class GraphRAGProcessor:
     def init_db(self):
         """Initialize SQLite database and create tables if they don't exist."""
         with self.db_manager as cursor:
-            # Create documents table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id TEXT PRIMARY KEY,
-                    display_name TEXT NOT NULL,
-                    original_filename TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('UPLOADED', 'PROCESSING', 'COMPLETED', 'ERROR')),
-                    workspace_path TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    file_size INTEGER,
-                    processing_time INTEGER,
-                    error_message TEXT
-                )
-            """)
+            # Check if we need to migrate the table
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='documents'")
+            table_exists = cursor.fetchone() is not None
+            
+            if table_exists:
+                # Check if we need to migrate the CHECK constraint
+                cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'")
+                table_sql = cursor.fetchone()[0]
+                
+                if "'CANCELLED'" not in table_sql:
+                    logger.info("Migrating documents table to support CANCELLED status...")
+                    
+                    # Create a new table with updated schema
+                    cursor.execute("""
+                        CREATE TABLE documents_new (
+                            id TEXT PRIMARY KEY,
+                            display_name TEXT NOT NULL,
+                            original_filename TEXT NOT NULL,
+                            status TEXT NOT NULL CHECK (status IN ('UPLOADED', 'PROCESSING', 'COMPLETED', 'ERROR', 'CANCELLED')),
+                            workspace_path TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            file_size INTEGER,
+                            processing_time INTEGER,
+                            error_message TEXT,
+                            cancellation_requested INTEGER DEFAULT 0
+                        )
+                    """)
+                    
+                    # Copy data from old table
+                    cursor.execute("""
+                        INSERT INTO documents_new 
+                        SELECT id, display_name, original_filename, status, workspace_path, 
+                               created_at, updated_at, file_size, processing_time, error_message, 0
+                        FROM documents
+                    """)
+                    
+                    # Drop old table and rename new one
+                    cursor.execute("DROP TABLE documents")
+                    cursor.execute("ALTER TABLE documents_new RENAME TO documents")
+                    logger.info("Documents table migration completed")
+                else:
+                    # Just ensure cancellation_requested column exists
+                    try:
+                        cursor.execute("ALTER TABLE documents ADD COLUMN cancellation_requested INTEGER DEFAULT 0")
+                        logger.info("Added cancellation_requested column to documents table")
+                    except sqlite3.OperationalError:
+                        pass
+            else:
+                # Create new table with full schema
+                cursor.execute("""
+                    CREATE TABLE documents (
+                        id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        original_filename TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN ('UPLOADED', 'PROCESSING', 'COMPLETED', 'ERROR', 'CANCELLED')),
+                        workspace_path TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        file_size INTEGER,
+                        processing_time INTEGER,
+                        error_message TEXT,
+                        cancellation_requested INTEGER DEFAULT 0
+                    )
+                """)
             
             # Create processing logs table with CASCADE delete
             cursor.execute("""
@@ -102,6 +218,7 @@ class GraphRAGProcessor:
                     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
                 )
             """)
+        
         logger.info("Database initialized successfully")
     
     def get_all_documents(self, status: Optional[str] = None) -> List[Dict]:
@@ -109,7 +226,7 @@ class GraphRAGProcessor:
         try:
             with self.db_manager as cursor:
                 query = """
-                    SELECT id, display_name, original_filename, status, created_at, 
+                    SELECT id, display_name, original_filename, status, workspace_path, created_at, 
                            updated_at, file_size, processing_time, error_message
                     FROM documents
                 """
@@ -323,8 +440,27 @@ class GraphRAGProcessor:
         if not settings_path.exists():
             raise Exception(f"Settings file does not exist: {settings_path}")
     
+    def _check_cancellation(self, doc_id: str) -> bool:
+        """Check if cancellation was requested for this document."""
+        # Check thread registry
+        if thread_registry.is_cancellation_requested(doc_id):
+            return True
+        
+        # Also check database flag
+        try:
+            with self.db_manager as cursor:
+                cursor.execute("SELECT cancellation_requested FROM documents WHERE id = ?", (doc_id,))
+                result = cursor.fetchone()
+                return result and result[0] == 1
+        except:
+            return False
+    
     def _run_graphrag_indexing(self, doc_id: str, workspace_path: Path) -> None:
-        """Run GraphRAG indexing process."""
+        """Run GraphRAG indexing process with cancellation support."""
+        # Check for cancellation before starting
+        if self._check_cancellation(doc_id):
+            raise Exception("Processing cancelled by user")
+        
         self.log_processing_step(doc_id, "GRAPHRAG", f"Running GraphRAG indexing on {workspace_path.resolve()}")
         
         command = [str(VENV_GRAPHRAG_PATH), "index", "--root", str(workspace_path.resolve())]
@@ -332,54 +468,104 @@ class GraphRAGProcessor:
         self.log_processing_step(doc_id, "GRAPHRAG", f"Command: {' '.join(command)}")
         self.log_processing_step(doc_id, "GRAPHRAG", f"Working directory: {PROJECT_ROOT}")
         
-        result = subprocess.run(command, capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        # Use Popen instead of run to allow cancellation
+        process = subprocess.Popen(
+            command, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True, 
+            cwd=str(PROJECT_ROOT)
+        )
         
-        if result.returncode != 0:
-            error_msg = f"GraphRAG failed: {result.stderr}"
-            self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
-            if result.stdout:
-                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {result.stdout}", "INFO")
-            raise Exception(error_msg)
+        # Register the subprocess
+        thread_registry.register_subprocess(doc_id, process)
         
-        self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
-        if result.stdout:
-            self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {result.stdout}", "INFO")
+        try:
+            stdout, stderr = process.communicate()
+            
+            if process.returncode != 0:
+                # Check if it was cancelled
+                if self._check_cancellation(doc_id):
+                    raise Exception("Processing cancelled by user")
+                
+                error_msg = f"GraphRAG failed: {stderr}"
+                self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
+                if stdout:
+                    self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {stdout}", "INFO")
+                raise Exception(error_msg)
+            
+            self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
+            if stdout:
+                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {stdout}", "INFO")
+        finally:
+            # Unregister the subprocess
+            thread_registry._subprocesses.pop(doc_id, None)
     
     def _process_document_core(self, doc_id: str, workspace_path: Path, uploaded_file_buffer: bytes = None, original_filename: str = None) -> None:
-        """Core document processing logic shared between new and reprocess workflows."""
+        """Core document processing logic shared between new and reprocess workflows with cancellation support."""
         start_time = datetime.now()
         
-        # Save file if this is a new upload
-        if uploaded_file_buffer and original_filename:
-            self.log_processing_step(doc_id, "UPLOAD", f"Saving uploaded file: {original_filename}")
-            input_path = workspace_path / "input" / original_filename
-            with open(input_path, "wb") as f:
-                f.write(uploaded_file_buffer)
+        try:
+            # Check for cancellation at start
+            if self._check_cancellation(doc_id):
+                raise Exception("Processing cancelled by user")
             
-            # Extract text
-            self.log_processing_step(doc_id, "EXTRACT", "Extracting text from document")
-            text_path = workspace_path / "input" / f"{input_path.stem}.txt"
-            if not self.extract_text_from_pdf(input_path, text_path):
-                raise Exception("Failed to extract text from document")
+            # Save file if this is a new upload
+            if uploaded_file_buffer and original_filename:
+                self.log_processing_step(doc_id, "UPLOAD", f"Saving uploaded file: {original_filename}")
+                input_path = workspace_path / "input" / original_filename
+                with open(input_path, "wb") as f:
+                    f.write(uploaded_file_buffer)
+                
+                # Check for cancellation after file save
+                if self._check_cancellation(doc_id):
+                    raise Exception("Processing cancelled by user")
+                
+                # Extract text
+                self.log_processing_step(doc_id, "EXTRACT", "Extracting text from document")
+                text_path = workspace_path / "input" / f"{input_path.stem}.txt"
+                if not self.extract_text_from_pdf(input_path, text_path):
+                    raise Exception("Failed to extract text from document")
+                
+                # Check for cancellation after text extraction
+                if self._check_cancellation(doc_id):
+                    raise Exception("Processing cancelled by user")
+                
+                # Validate workspace
+                self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
+                self._validate_workspace(workspace_path, text_path)
+            else:
+                # For reprocessing, just validate existing workspace
+                self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
+                self._validate_workspace(workspace_path)
             
-            # Validate workspace
-            self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
-            self._validate_workspace(workspace_path, text_path)
-        else:
-            # For reprocessing, just validate existing workspace
-            self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
-            self._validate_workspace(workspace_path)
-        
-        # Run GraphRAG indexing
-        self._run_graphrag_indexing(doc_id, workspace_path)
-        
-        # Update processing time and status
-        processing_time = (datetime.now() - start_time).total_seconds()
-        with self.db_manager as cursor:
-            cursor.execute("UPDATE documents SET processing_time = ? WHERE id = ?", (int(processing_time), doc_id))
-        
-        self.update_document_status(doc_id, DocumentStatus.COMPLETED)
-        self.log_processing_step(doc_id, "COMPLETE", f"Processing completed in {processing_time:.2f} seconds")
+            # Check for cancellation before GraphRAG
+            if self._check_cancellation(doc_id):
+                raise Exception("Processing cancelled by user")
+            
+            # Run GraphRAG indexing
+            self._run_graphrag_indexing(doc_id, workspace_path)
+            
+            # Check for cancellation after GraphRAG
+            if self._check_cancellation(doc_id):
+                raise Exception("Processing cancelled by user")
+            
+            # Update processing time and status
+            processing_time = (datetime.now() - start_time).total_seconds()
+            with self.db_manager as cursor:
+                cursor.execute("UPDATE documents SET processing_time = ? WHERE id = ?", (int(processing_time), doc_id))
+            
+            self.update_document_status(doc_id, DocumentStatus.COMPLETED)
+            self.log_processing_step(doc_id, "COMPLETE", f"Processing completed in {processing_time:.2f} seconds")
+            
+        except Exception as e:
+            # Check if this was a cancellation
+            if "cancelled by user" in str(e).lower():
+                self.update_document_status(doc_id, DocumentStatus.CANCELLED, "Processing cancelled by user")
+                self.log_processing_step(doc_id, "CANCELLED", "Processing was cancelled by user", "WARNING")
+            else:
+                # Re-raise for normal error handling
+                raise
     
     def process_document_background(self, doc_id: str, uploaded_file, _display_name: str):
         """Process document in background thread."""
@@ -398,8 +584,13 @@ class GraphRAGProcessor:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error processing document {doc_id}: {error_msg}")
-            self.update_document_status(doc_id, DocumentStatus.ERROR, error_msg)
-            self.log_processing_step(doc_id, "ERROR", error_msg, "ERROR")
+            # Don't update status if already cancelled
+            if self.get_document_status(doc_id) != DocumentStatus.CANCELLED:
+                self.update_document_status(doc_id, DocumentStatus.ERROR, error_msg)
+                self.log_processing_step(doc_id, "ERROR", error_msg, "ERROR")
+        finally:
+            # Clean up thread registry
+            thread_registry.unregister(doc_id)
     
     def fix_workspace_paths(self):
         """Fix relative workspace paths to absolute paths in existing documents."""
@@ -443,6 +634,9 @@ class GraphRAGProcessor:
             thread.daemon = True
             thread.start()
             
+            # Register the thread
+            thread_registry.register_thread(doc_id, thread)
+            
             return f"✅ Started reprocessing '{display_name}' (ID: {doc_id})"
             
         except Exception as e:
@@ -459,8 +653,13 @@ class GraphRAGProcessor:
         except Exception as e:
             error_msg = f"Error reprocessing document {doc_id}: {str(e)}"
             logger.error(error_msg)
-            self.update_document_status(doc_id, DocumentStatus.ERROR, error_msg)
-            self.log_processing_step(doc_id, "ERROR", error_msg, "ERROR")
+            # Don't update status if already cancelled
+            if self.get_document_status(doc_id) != DocumentStatus.CANCELLED:
+                self.update_document_status(doc_id, DocumentStatus.ERROR, error_msg)
+                self.log_processing_step(doc_id, "ERROR", error_msg, "ERROR")
+        finally:
+            # Clean up thread registry
+            thread_registry.unregister(doc_id)
 
     def process_new_document(self, uploaded_file, display_name: str = None) -> str:
         """Process a new document upload."""
@@ -494,6 +693,9 @@ class GraphRAGProcessor:
             )
             thread.daemon = True
             thread.start()
+            
+            # Register the thread
+            thread_registry.register_thread(doc_id, thread)
             
             return f"✅ Started processing '{display_name}' (ID: {doc_id})"
             
@@ -614,6 +816,34 @@ class GraphRAGProcessor:
         except sqlite3.Error as e:
             logger.error(f"Error getting processing logs: {e}")
             return []
+    
+    def cancel_document_processing(self, doc_id: str) -> bool:
+        """Cancel processing for a document."""
+        try:
+            # Check if document is currently processing
+            status = self.get_document_status(doc_id)
+            if status != DocumentStatus.PROCESSING:
+                logger.warning(f"Cannot cancel document {doc_id} with status: {status}")
+                return False
+            
+            # Set cancellation flag in database
+            with self.db_manager as cursor:
+                cursor.execute("UPDATE documents SET cancellation_requested = 1 WHERE id = ?", (doc_id,))
+            
+            # Request cancellation in thread registry
+            cancelled = thread_registry.request_cancellation(doc_id)
+            
+            if cancelled:
+                self.log_processing_step(doc_id, "CANCEL", "Cancellation requested by user", "WARNING")
+                logger.info(f"Cancellation requested for document {doc_id}")
+            else:
+                logger.warning(f"Could not find active thread for document {doc_id}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error cancelling document processing: {e}")
+            return False
 
 # Global instance
 processor = GraphRAGProcessor()
@@ -658,3 +888,7 @@ def get_processing_logs(doc_id: str):
 def get_all_documents():
     """Get all documents."""
     return processor.get_all_documents()
+
+def cancel_document_processing(doc_id: str):
+    """Cancel document processing."""
+    return processor.cancel_document_processing(doc_id)
