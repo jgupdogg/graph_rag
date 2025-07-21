@@ -81,7 +81,7 @@ class ConfigManager:
             "llm": {
                 "api_key": "${GRAPHRAG_API_KEY}",
                 "type": "openai_chat",
-                "model": "gpt-3.5-turbo",
+                "model": "o4-mini",
                 "model_supports_json": True,
                 "max_tokens": 4000,
                 "temperature": 0,
@@ -454,6 +454,54 @@ Output:
         """Check if API key is available in environment."""
         env_vars = self.get_environment_variables()
         return any(env_vars.values())
+    
+    def get_default_config(self) -> Dict[str, Any]:
+        """Get default GraphRAG configuration. Alias for _get_minimal_config."""
+        return self._get_minimal_config()
+    
+    def save_config(self, config: Dict[str, Any], file_path: str):
+        """Save configuration to a YAML file."""
+        import yaml
+        with open(file_path, 'w', encoding='utf-8') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    
+    def create_model_specific_config(self, model: str = "o4-mini") -> Dict:
+        """Create a configuration dict with the specified model."""
+        config = self.get_default_config()
+        
+        # Update the chat model
+        config["llm"]["model"] = model
+        
+        # Adjust token limits based on model
+        model_configs = {
+            "o4-mini": {"max_tokens": 128000, "tokens_per_minute": 300000},
+            "gpt-4.1-mini": {"max_tokens": 128000, "tokens_per_minute": 200000},
+            "gpt-4.1-nano": {"max_tokens": 64000, "tokens_per_minute": 400000},
+            "o3-mini": {"max_tokens": 128000, "tokens_per_minute": 100000},
+            "gpt-4o-mini": {"max_tokens": 128000, "tokens_per_minute": 300000},
+            "gpt-4o-mini-audio-preview": {"max_tokens": 128000, "tokens_per_minute": 200000},
+            "o1-mini": {"max_tokens": 128000, "tokens_per_minute": 100000}
+        }
+        
+        if model in model_configs:
+            config["llm"]["max_tokens"] = model_configs[model]["max_tokens"]
+            config["llm"]["tokens_per_minute"] = model_configs[model]["tokens_per_minute"]
+        
+        return config
+    
+    def save_model_config_to_workspace(self, workspace_path: str, model: str = "o4-mini"):
+        """Save model-specific configuration to a workspace directory."""
+        config = self.create_model_specific_config(model)
+        
+        # Ensure workspace config directory exists
+        workspace_config_dir = Path(workspace_path) / "config"
+        workspace_config_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save settings.yaml
+        settings_path = workspace_config_dir / "settings.yaml"
+        self.save_config(config, str(settings_path))
+        
+        return str(settings_path)
 
 # Global instance
 config_manager = ConfigManager()

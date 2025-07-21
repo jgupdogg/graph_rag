@@ -248,9 +248,13 @@ class GraphRAGQueryEngine:
             logger.error(f"Error getting document workspaces: {e}")
             return []
     
-    def _run_graphrag_query(self, workspace_path: Path, query: str, method: str = "local") -> Dict[str, Any]:
+    def _run_graphrag_query(self, workspace_path: Path, query: str, method: str = "local", model: str = "o4-mini") -> Dict[str, Any]:
         """Run a GraphRAG query on a single workspace."""
         try:
+            # Ensure workspace has the correct model configuration
+            from config_manager import config_manager
+            config_manager.save_model_config_to_workspace(str(workspace_path), model)
+            
             # Prepare the command
             graphrag_cmd = self.venv_path / "bin" / "graphrag"
             if not graphrag_cmd.exists():
@@ -358,7 +362,7 @@ class GraphRAGQueryEngine:
         
         return merged_response.strip()
     
-    def query_documents(self, doc_ids: List[str], query: str, method: str = "local") -> QueryResult:
+    def query_documents(self, doc_ids: List[str], query: str, method: str = "local", model: str = "o4-mini") -> QueryResult:
         """Query multiple documents and return a merged response."""
         if not doc_ids:
             return QueryResult(
@@ -392,7 +396,7 @@ class GraphRAGQueryEngine:
         for doc_id, workspace_path, display_name in workspaces:
             logger.info(f"Querying document: {display_name} ({doc_id})")
             
-            response = self._run_graphrag_query(workspace_path, query, method)
+            response = self._run_graphrag_query(workspace_path, query, method, model)
             response["document_name"] = display_name
             response["document_id"] = doc_id
             responses.append(response)
@@ -437,21 +441,21 @@ class GraphRAGQueryEngine:
             context_info=merged_context_info
         )
     
-    def global_search(self, doc_ids: List[str], query: str) -> QueryResult:
+    def global_search(self, doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
         """Perform a global search across selected documents."""
-        return self.query_documents(doc_ids, query, method="global")
+        return self.query_documents(doc_ids, query, method="global", model=model)
     
-    def local_search(self, doc_ids: List[str], query: str) -> QueryResult:
+    def local_search(self, doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
         """Perform a local search across selected documents."""
-        return self.query_documents(doc_ids, query, method="local")
+        return self.query_documents(doc_ids, query, method="local", model=model)
     
-    def drift_search(self, doc_ids: List[str], query: str) -> QueryResult:
+    def drift_search(self, doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
         """Perform a drift search across selected documents."""
-        return self.query_documents(doc_ids, query, method="drift")
+        return self.query_documents(doc_ids, query, method="drift", model=model)
     
-    def basic_search(self, doc_ids: List[str], query: str) -> QueryResult:
+    def basic_search(self, doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
         """Perform a basic search across selected documents."""
-        return self.query_documents(doc_ids, query, method="basic")
+        return self.query_documents(doc_ids, query, method="basic", model=model)
     
     def get_supported_methods(self) -> List[str]:
         """Get list of supported query methods."""
@@ -588,25 +592,25 @@ query_engine = GraphRAGQueryEngine()
 chat_history = ChatHistory()
 
 # Convenience functions
-def query_documents(doc_ids: List[str], query: str, method: str = "local") -> QueryResult:
+def query_documents(doc_ids: List[str], query: str, method: str = "local", model: str = "o4-mini") -> QueryResult:
     """Query multiple documents with the specified method."""
-    return query_engine.query_documents(doc_ids, query, method)
+    return query_engine.query_documents(doc_ids, query, method, model)
 
-def global_search(doc_ids: List[str], query: str) -> QueryResult:
+def global_search(doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
     """Perform a global search across selected documents."""
-    return query_engine.global_search(doc_ids, query)
+    return query_engine.global_search(doc_ids, query, model)
 
-def local_search(doc_ids: List[str], query: str) -> QueryResult:
+def local_search(doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
     """Perform a local search across selected documents."""
-    return query_engine.local_search(doc_ids, query)
+    return query_engine.local_search(doc_ids, query, model)
 
-def drift_search(doc_ids: List[str], query: str) -> QueryResult:
+def drift_search(doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
     """Perform a drift search across selected documents."""
-    return query_engine.drift_search(doc_ids, query)
+    return query_engine.drift_search(doc_ids, query, model)
 
-def basic_search(doc_ids: List[str], query: str) -> QueryResult:
+def basic_search(doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
     """Perform a basic search across selected documents."""
-    return query_engine.basic_search(doc_ids, query)
+    return query_engine.basic_search(doc_ids, query, model)
 
 def get_supported_methods() -> List[str]:
     """Get list of supported query methods."""

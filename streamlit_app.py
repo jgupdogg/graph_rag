@@ -6,6 +6,7 @@ Advanced interface to explore multiple document knowledge graphs
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
@@ -13,6 +14,7 @@ from pathlib import Path
 import json
 import logging
 import os
+from datetime import datetime
 import streamlit.components.v1 as components
 from pyvis_graph import (
     create_pyvis_network, 
@@ -31,7 +33,7 @@ from app_logic import (
     get_document_status,
     reprocess_failed_document,
     get_processing_logs,
-    cancel_document_processing
+    DocumentStatus,
 )
 from query_logic import (
     query_documents,
@@ -63,205 +65,18 @@ st.set_page_config(
     }
 )
 
-# Custom CSS for professional styling - Version 2.0
+# Minimal CSS for basic styling
 st.markdown("""
 <style>
-    /* Import Google Fonts */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    /* Global styles - Force application */
-    .stApp {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
-        background-color: #F8F9FA !important;
-    }
-    
-    /* Force main container styling */
-    .main .block-container {
-        padding-top: 1rem !important;
-        max-width: none !important;
-    }
-    
     /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     
-    /* Custom header styling - Force visibility */
-    .main-header {
-        background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%) !important;
-        padding: 1.5rem 2rem !important;
-        border-radius: 12px !important;
-        margin-bottom: 2rem !important;
-        box-shadow: 0 4px 20px rgba(76, 175, 80, 0.15) !important;
-        width: 100% !important;
-        display: block !important;
-        position: relative !important;
-        z-index: 100 !important;
-    }
-    
-    .main-header h1 {
-        color: white !important;
-        font-weight: 600;
-        font-size: 2.5rem;
-        margin: 0;
-        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .main-header p {
-        color: rgba(255, 255, 255, 0.9) !important;
-        font-size: 1.1rem;
-        margin: 0.5rem 0 0 0;
-        font-weight: 400;
-    }
-    
-    /* Sidebar enhancements */
-    .css-1d391kg {
-        background-color: #FFFFFF;
-        border-right: 1px solid #E0E0E0;
-    }
-    
-    /* Button styling */
+    /* Basic button styling */
     .stButton > button {
         border-radius: 8px;
         font-weight: 500;
-        transition: all 0.2s ease;
-        border: none;
-        padding: 0.5rem 1rem;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    }
-    
-    /* Primary button styling */
-    .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #4CAF50 0%, #45A049 100%);
-        color: white;
-    }
-    
-    /* Container styling */
-    .element-container {
-        margin-bottom: 1rem;
-    }
-    
-    /* Metric cards */
-    .metric-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        margin: 0.5rem 0;
-        border-left: 4px solid #4CAF50;
-    }
-    
-    /* Success/error message styling */
-    .stSuccess {
-        border-radius: 8px;
-        border-left: 4px solid #4CAF50;
-    }
-    
-    .stError {
-        border-radius: 8px;
-        border-left: 4px solid #F44336;
-    }
-    
-    .stWarning {
-        border-radius: 8px;
-        border-left: 4px solid #FF9800;
-    }
-    
-    .stInfo {
-        border-radius: 8px;
-        border-left: 4px solid #2196F3;
-    }
-    
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        font-weight: 500;
-        border-radius: 8px;
-    }
-    
-    /* Text input styling */
-    .stTextInput > div > div > input {
-        border-radius: 8px;
-        border: 2px solid #E0E0E0;
-        transition: border-color 0.2s ease;
-    }
-    
-    .stTextInput > div > div > input:focus {
-        border-color: #4CAF50;
-        box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
-    }
-    
-    /* Selectbox styling */
-    .stSelectbox > div > div {
-        border-radius: 8px;
-    }
-    
-    /* Multiselect styling */
-    .stMultiSelect > div > div {
-        border-radius: 8px;
-    }
-    
-    /* Slider styling */
-    .stSlider > div > div > div > div {
-        background-color: #4CAF50;
-    }
-    
-    /* Progress bar styling */
-    .stProgress > div > div > div {
-        background-color: #4CAF50;
-        border-radius: 4px;
-    }
-    
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        padding: 0.75rem 1.5rem;
-        font-weight: 500;
-    }
-    
-    /* Spinner customization */
-    .stSpinner > div {
-        border-top-color: #4CAF50;
-    }
-    
-    /* Custom spacing */
-    .section-header {
-        font-size: 1.2rem;
-        font-weight: 600;
-        margin: 1.5rem 0 1rem 0;
-        color: #2C3E50;
-        border-bottom: 2px solid #E0E0E0;
-        padding-bottom: 0.5rem;
-    }
-    
-    /* Loading animation */
-    @keyframes pulse {
-        0% { opacity: 0.6; }
-        50% { opacity: 1; }
-        100% { opacity: 0.6; }
-    }
-    
-    .loading-pulse {
-        animation: pulse 2s infinite;
-    }
-    
-    /* Responsive design */
-    @media (max-width: 768px) {
-        .main-header h1 {
-            font-size: 2rem;
-        }
-        
-        .main-header {
-            padding: 1rem;
-        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -270,21 +85,10 @@ st.markdown("""
 if "ui_version" not in st.session_state:
     st.session_state.ui_version = "2.0"
 
-# Test CSS Application
-st.markdown("""
-<div style="background: red; padding: 10px; margin: 10px 0;">
-    🚨 CSS Test Block - If you see this with a red background, HTML/CSS is working!
-</div>
-""", unsafe_allow_html=True)
 
-# Enhanced header with custom styling and debugging
-st.markdown(f"""
-<div class="main-header" style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1.5rem 2rem; border-radius: 12px; margin-bottom: 2rem; box-shadow: 0 4px 20px rgba(76, 175, 80, 0.15);">
-    <h1 style="color: white; font-weight: 600; font-size: 2.5rem; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">🧠 GraphRAG Explorer</h1>
-    <p style="color: rgba(255, 255, 255, 0.9); font-size: 1.1rem; margin: 0.5rem 0 0 0; font-weight: 400;">Interactive knowledge graph exploration and document analysis</p>
-    <small style="color: rgba(255, 255, 255, 0.7);">UI Version: {st.session_state.ui_version}</small>
-</div>
-""", unsafe_allow_html=True)
+# Simple header without complex styling
+st.title("🧠 GraphRAG Explorer")
+st.caption("Interactive knowledge graph exploration and document analysis")
 
 # Initialize application
 processor.init_db()
@@ -335,6 +139,187 @@ def create_networkx_graph(entities, relationships):
             )
     
     return G
+
+def load_community_reports(selected_doc_ids):
+    """Load community reports from selected documents."""
+    if not selected_doc_ids:
+        return pd.DataFrame()
+    
+    all_reports = []
+    
+    try:
+        # Get document info from database
+        with processor.db_manager as cursor:
+            placeholders = ','.join('?' for _ in selected_doc_ids)
+            query = f"SELECT id, workspace_path, display_name FROM documents WHERE id IN ({placeholders}) AND status = ?"
+            cursor.execute(query, selected_doc_ids + [DocumentStatus.COMPLETED])
+            docs = cursor.fetchall()
+        
+        for doc_id, workspace_path, display_name in docs:
+            workspace = Path(workspace_path)
+            
+            # Look for community reports file
+            reports_file = workspace / "output" / "community_reports.parquet"
+            
+            # Try alternative location
+            if not reports_file.exists():
+                reports_file = workspace / "output" / "artifacts" / "community_reports.parquet"
+            
+            if reports_file.exists():
+                reports_df = pd.read_parquet(reports_file)
+                # Add source document information
+                reports_df['source_document'] = display_name
+                reports_df['source_doc_id'] = doc_id
+                all_reports.append(reports_df)
+                logger.info(f"Loaded {len(reports_df)} community reports from {display_name}")
+        
+        if all_reports:
+            # Merge all reports
+            merged_reports = pd.concat(all_reports, ignore_index=True)
+            return merged_reports
+        else:
+            return pd.DataFrame()
+            
+    except Exception as e:
+        logger.error(f"Error loading community reports: {e}")
+        return pd.DataFrame()
+
+def generate_ai_document_summary(selected_doc_ids):
+    """Generate AI-powered comprehensive document summary."""
+    if not selected_doc_ids:
+        return None
+    
+    try:
+        # Get document info
+        all_docs = get_all_documents()
+        selected_docs = [doc for doc in all_docs if doc['id'] in selected_doc_ids]
+        
+        if not selected_docs:
+            return None
+        
+        # Focus on the first document for now (can be enhanced for multiple docs later)
+        doc = selected_docs[0]
+        doc_id = doc['id']
+        workspace_path = Path(doc['workspace_path'])
+        
+        # Check for existing summary cache
+        summary_cache_file = workspace_path / "ai_document_summary_cache.json"
+        if summary_cache_file.exists():
+            try:
+                with open(summary_cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                # Check if cache is recent (less than 7 days old)
+                from datetime import timedelta
+                cache_time = datetime.fromisoformat(cached_data.get('generated_at', '2000-01-01'))
+                if datetime.now() - cache_time < timedelta(days=7):
+                    return cached_data
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass  # Continue to regenerate if cache is invalid
+        
+        # Get document text excerpt (first 1000 characters)
+        text_excerpt = ""
+        input_dir = workspace_path / "input"
+        for text_file in input_dir.glob("*.txt"):
+            try:
+                with open(text_file, 'r', encoding='utf-8') as f:
+                    text_excerpt = f.read(2500)  # Increased from 1000 to provide more context
+                break
+            except Exception:
+                continue
+        
+        # Get top community reports
+        reports_df = load_community_reports([doc_id])
+        top_reports = []
+        if not reports_df.empty:
+            # Sort by size and rank to get most comprehensive reports
+            if 'size' in reports_df.columns and 'rank' in reports_df.columns:
+                sorted_reports = reports_df.sort_values(['size', 'rank'], ascending=[False, False])
+                top_reports = sorted_reports.head(10)  # Get top 10 largest communities
+        
+        # Check for existing classification cache
+        classification_data = ""
+        doc_summary_cache = workspace_path / "document_summary_cache.json"
+        if doc_summary_cache.exists():
+            try:
+                with open(doc_summary_cache, 'r') as f:
+                    cache_data = json.load(f)
+                    if 'overview' in cache_data:
+                        classification_data = cache_data['overview']
+            except (json.JSONDecodeError, FileNotFoundError):
+                pass
+        
+        # Create comprehensive prompt for AI summary
+        prompt_parts = [
+            "Please provide a comprehensive document summary with bullet points for major takeaways based on the following information:",
+            f"\n## Document: {doc['display_name']}"
+        ]
+        
+        if classification_data:
+            prompt_parts.append(f"\n## Previous Classification:\n{classification_data}")
+        
+        if text_excerpt:
+            prompt_parts.append(f"\n## Document Content (First 2500 characters):\n{text_excerpt}")
+        
+        if len(top_reports) > 0:
+            prompt_parts.append("\n## Key Community Insights (Top 10 Largest Communities):")
+            for i, (_, report) in enumerate(top_reports.iterrows(), 1):
+                title = report.get('title', 'Untitled')
+                summary = report.get('summary', 'No summary available')
+                size = report.get('size', 'Unknown')
+                prompt_parts.append(f"\n{i}. **{title}** (Size: {size}): {summary}")
+        
+        prompt_parts.append("""
+\n## Please provide a concise summary with the following sections:
+
+### Executive Summary
+Provide a 2-3 sentence overview of the document.
+
+### Major Takeaways
+List 5-7 bullet points highlighting the most important information, insights, or requirements from the document. Focus on concrete, actionable items.
+
+### Document Details
+- **Type & Purpose**: What kind of document and its objective
+- **Primary Focus**: The central theme or domain
+- **Target Audience**: Who would use this document
+- **Key Topics**: Main subject areas covered
+
+Keep the entire response concise but informative, approximately 300-400 words total. Use bullet points where appropriate for clarity.""")
+        
+        full_prompt = "".join(prompt_parts)
+        
+        # Use query_documents to generate the summary
+        result = query_documents(
+            doc_ids=[doc_id],
+            query=full_prompt,
+            method="global"  # Use global search for comprehensive overview
+        )
+        
+        if result.success:
+            summary_data = {
+                "document_id": doc_id,
+                "document_name": doc['display_name'],
+                "ai_summary": result.response,
+                "classification": classification_data,
+                "generated_at": datetime.now().isoformat(),
+                "method_used": "global",
+                "source_reports_count": len(top_reports)
+            }
+            
+            # Cache the result
+            try:
+                with open(summary_cache_file, 'w') as f:
+                    json.dump(summary_data, f, indent=2)
+            except Exception as e:
+                logger.warning(f"Failed to cache AI summary: {e}")
+            
+            return summary_data
+        else:
+            logger.error(f"Failed to generate AI summary: {result.error_message}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error generating AI document summary: {e}")
+        return None
 
 def create_plotly_graph(G, layout_type="spring"):
     """Create interactive Plotly graph visualization."""
@@ -486,23 +471,13 @@ def render_document_management_section():
     all_docs = processor.get_all_documents()
     processing_docs = [doc for doc in all_docs if doc['status'] == 'PROCESSING']
     failed_docs = [doc for doc in all_docs if doc['status'] == 'ERROR']
-    cancelled_docs = [doc for doc in all_docs if doc['status'] == 'CANCELLED']
     
     if processing_docs:
         st.sidebar.markdown('<p class="section-header">⏳ Processing Status</p>', unsafe_allow_html=True)
         for doc in processing_docs:
             with st.sidebar.container():
                 st.markdown(f'<div class="loading-pulse">🔄 Processing: **{doc["display_name"]}**</div>', unsafe_allow_html=True)
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.progress(0.5)  # Indeterminate progress
-                with col2:
-                    if st.button("❌", key=f"cancel_{doc['id']}", help="Cancel processing"):
-                        if cancel_document_processing(doc['id']):
-                            st.success("✅ Cancellation requested")
-                            st.rerun()
-                        else:
-                            st.error("❌ Failed to cancel")
+                st.progress(0.5)  # Indeterminate progress
     
     # Show failed documents with retry option
     if failed_docs:
@@ -564,30 +539,6 @@ def render_document_management_section():
                                 st.error("❌ Failed to delete document")
                         st.rerun()
         
-        # Show cancelled documents with retry option
-        if cancelled_docs:
-            st.sidebar.markdown('<p class="section-header">⏹️ Cancelled Documents</p>', unsafe_allow_html=True)
-            for doc in cancelled_docs:
-                with st.sidebar.expander(f"⏹️ {doc['display_name']}", expanded=False):
-                    st.info("Processing was cancelled by user")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🔄 Retry", key=f"retry_cancelled_{doc['id']}", help="Retry processing"):
-                            with st.spinner("🔄 Retrying processing..."):
-                                # Reset cancellation flag
-                                with processor.db_manager as cursor:
-                                    cursor.execute("UPDATE documents SET cancellation_requested = 0 WHERE id = ?", (doc['id'],))
-                                result = reprocess_failed_document(doc['id'])
-                                st.success(result)
-                                st.rerun()
-                    with col2:
-                        if st.button("🗑️ Delete", key=f"delete_cancelled_{doc['id']}", type="secondary", help="Delete document"):
-                            if delete_document(doc['id']):
-                                st.success("✅ Document deleted")
-                                st.rerun()
-                            else:
-                                st.error("❌ Failed to delete")
         
         return selected_doc_ids
     else:
@@ -690,23 +641,13 @@ def render_universal_sidebar():
     all_docs = get_all_documents()
     processing_docs = [doc for doc in all_docs if doc['status'] == 'PROCESSING']
     failed_docs = [doc for doc in all_docs if doc['status'] == 'ERROR']
-    cancelled_docs = [doc for doc in all_docs if doc['status'] == 'CANCELLED']
     
     if processing_docs:
         st.sidebar.markdown('<p class="section-header">⏳ Processing Status</p>', unsafe_allow_html=True)
         for doc in processing_docs:
             with st.sidebar.container():
                 st.sidebar.markdown(f'<div class="loading-pulse">🔄 Processing: **{doc["display_name"]}**</div>', unsafe_allow_html=True)
-                col1, col2 = st.sidebar.columns([3, 1])
-                with col1:
-                    st.progress(0.5)  # Indeterminate progress
-                with col2:
-                    if st.button("❌", key=f"cancel_universal_{doc['id']}", help="Cancel processing"):
-                        if cancel_document_processing(doc['id']):
-                            st.success("✅ Cancellation requested")
-                            st.rerun()
-                        else:
-                            st.error("❌ Failed to cancel")
+                st.sidebar.progress(0.5)  # Indeterminate progress
     
     if failed_docs:
         st.sidebar.markdown('<p class="section-header">❌ Failed Documents</p>', unsafe_allow_html=True)
@@ -730,30 +671,6 @@ def render_universal_sidebar():
                         else:
                             st.error("❌ Failed to delete")
     
-    # Show cancelled documents with retry option
-    if cancelled_docs:
-        st.sidebar.markdown('<p class="section-header">⏹️ Cancelled Documents</p>', unsafe_allow_html=True)
-        for doc in cancelled_docs:
-            with st.sidebar.expander(f"⏹️ {doc['display_name']}", expanded=False):
-                st.info("Processing was cancelled by user")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("🔄 Retry", key=f"retry_universal_cancelled_{doc['id']}", help="Retry processing"):
-                        with st.spinner("🔄 Retrying processing..."):
-                            # Reset cancellation flag
-                            with processor.db_manager as cursor:
-                                cursor.execute("UPDATE documents SET cancellation_requested = 0 WHERE id = ?", (doc['id'],))
-                            result = reprocess_failed_document(doc['id'])
-                            st.success(result)
-                            st.rerun()
-                with col2:
-                    if st.button("🗑️ Delete", key=f"delete_universal_cancelled_{doc['id']}", type="secondary", help="Delete document"):
-                        if delete_document(doc['id']):
-                            st.success("✅ Document deleted")
-                            st.rerun()
-                        else:
-                            st.error("❌ Failed to delete")
     
     # 3. Document Selection
     processed_docs = get_processed_documents()
@@ -805,6 +722,158 @@ def render_universal_sidebar():
     else:
         st.sidebar.info("📤 No documents available. Upload your first document above.")
         return []
+
+def render_document_summary_tab(selected_doc_ids):
+    """Render document summary tab with community reports and metadata."""
+    if not selected_doc_ids:
+        st.info("👈 Select documents from the sidebar to view their summaries.")
+        return
+    
+    # Load document metadata
+    all_docs = get_all_documents()
+    selected_docs = [doc for doc in all_docs if doc['id'] in selected_doc_ids]
+    
+    # Header
+    st.title("📊 Document Summary")
+    st.caption("AI-powered overview, community insights, and document metadata")
+    
+    # AI-Generated Document Overview Section
+    st.subheader("🤖 AI-Generated Document Overview")
+    
+    with st.spinner("Generating comprehensive document overview..."):
+        ai_summary_data = generate_ai_document_summary(selected_doc_ids)
+    
+    if ai_summary_data:
+        # Display the AI summary with better contrast
+        st.markdown("### 📋 Comprehensive Document Analysis")
+        
+        # Show the AI-generated summary with proper styling
+        st.markdown("**AI Summary:**")
+        st.success(ai_summary_data['ai_summary'])
+        
+        # Show additional metadata in columns
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Analysis Method", ai_summary_data.get('method_used', 'N/A').title())
+        with col2:
+            st.metric("Source Reports", ai_summary_data.get('source_reports_count', 0))
+        with col3:
+            from datetime import datetime
+            gen_time = ai_summary_data.get('generated_at', '')
+            if gen_time:
+                try:
+                    gen_date = datetime.fromisoformat(gen_time).strftime("%Y-%m-%d %H:%M")
+                    st.metric("Generated", gen_date)
+                except:
+                    st.metric("Generated", "Recently")
+            else:
+                st.metric("Generated", "Unknown")
+        
+        # Show original classification if available
+        if ai_summary_data.get('classification'):
+            with st.expander("📋 Previous Document Classification", expanded=False):
+                st.markdown(ai_summary_data['classification'])
+                
+    else:
+        st.warning("⚠️ Unable to generate AI summary. The document analysis may take a moment to complete, or there might be an issue with the AI service.")
+        
+        # Fallback: show basic document info
+        doc_name = selected_docs[0]['display_name'] if selected_docs else "Unknown Document"
+        st.info(f"📄 Document: **{doc_name}** - Use the chat feature for detailed analysis.")
+    
+    st.markdown("---")
+    
+    # Document Metadata Section
+    st.subheader("📄 Document Information")
+    
+    for doc in selected_docs:
+        with st.expander(f"📄 {doc['display_name']}", expanded=True):
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Status", doc['status'])
+            with col2:
+                file_size_mb = doc.get('file_size', 0) / (1024 * 1024) if doc.get('file_size') else 0
+                st.metric("File Size", f"{file_size_mb:.2f} MB")
+            with col3:
+                processing_time = doc.get('processing_time', 0) 
+                st.metric("Processing Time", f"{processing_time}s" if processing_time else "N/A")
+            with col4:
+                created_date = doc['created_at'][:10] if doc.get('created_at') else "Unknown"
+                st.metric("Created", created_date)
+            
+            # Load graph data to get statistics
+            entities, relationships = load_multi_document_data([doc['id']])
+            
+            if not entities.empty:
+                st.markdown("**📊 Graph Statistics:**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Entities", len(entities))
+                with col2:
+                    st.metric("Relationships", len(relationships))
+                with col3:
+                    # Get unique entity types
+                    entity_types = entities['type'].value_counts() if 'type' in entities.columns else pd.Series()
+                    st.metric("Entity Types", len(entity_types))
+    
+    # Community Reports Section
+    st.markdown("---")
+    st.subheader("📋 Community Reports")
+    
+    # Load community reports
+    with st.spinner("Loading community reports..."):
+        reports_df = load_community_reports(selected_doc_ids)
+    
+    if reports_df.empty:
+        st.info("No community reports found for the selected documents.")
+    else:
+        st.success(f"Found {len(reports_df)} community reports")
+        
+        # Sort reports by rank (descending) and then by level
+        if 'rank' in reports_df.columns:
+            reports_df = reports_df.sort_values(['rank', 'level'], ascending=[False, True])
+        
+        # Display reports
+        for idx, report in reports_df.iterrows():
+            # Create a nice header with rank/rating
+            rank = report.get('rank', 0)
+            
+            with st.expander(f"📝 {report.get('title', 'Untitled Report')} (Rank: {rank:.1f})", expanded=(idx < 3)):
+                # Report metadata
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.markdown(f"**Source:** {report.get('source_document', 'Unknown')}")
+                with col2:
+                    st.markdown(f"**Level:** {report.get('level', 'N/A')}")
+                with col3:
+                    st.markdown(f"**Community ID:** {report.get('community', 'N/A')}")
+                
+                # Summary
+                if 'summary' in report and pd.notna(report['summary']):
+                    st.markdown("**Summary:**")
+                    st.info(report['summary'])
+                
+                # Rating explanation
+                if 'rating_explanation' in report and pd.notna(report['rating_explanation']):
+                    st.markdown(f"**Rating Explanation:** {report['rating_explanation']}")
+                
+                # Findings
+                if 'findings' in report and report['findings'] is not None:
+                    findings = report['findings']
+                    if isinstance(findings, (list, np.ndarray)) and len(findings) > 0:
+                        st.markdown("**Key Findings:**")
+                        for finding in findings:
+                            if isinstance(finding, dict):
+                                if 'summary' in finding:
+                                    st.markdown(f"• **{finding['summary']}**")
+                                if 'explanation' in finding:
+                                    st.markdown(f"  {finding['explanation']}")
+                    
+                # Full content (optional, collapsed by default)
+                if 'full_content' in report and pd.notna(report['full_content']):
+                    with st.expander("View Full Report", expanded=False):
+                        st.markdown(report['full_content'])
 
 def render_graph_tab(selected_doc_ids):
     """Render the Graph Explorer tab with embedded controls."""
@@ -997,7 +1066,7 @@ def main():
     # Main tab navigation - only show if documents are selected
     if selected_doc_ids:
         tab_summary, tab_chat, tab_graph = st.tabs([
-            "📊 Document Summary",
+            "📊 Summary",
             "💬 Chat Assistant",
             "🔍 Graph Explorer"
         ])
@@ -1055,7 +1124,6 @@ def render_processing_logs():
                 'PROCESSING': '⏳',
                 'ERROR': '❌',
                 'UPLOADED': '📤',
-                'CANCELLED': '⏹️'
             }.get(doc_status, '❓')
             
             st.markdown(f"**{status_emoji} {doc_name}** ({doc_status})")
@@ -1086,374 +1154,6 @@ def render_processing_logs():
             st.info(f"No logs found for document {doc_id}")
     
     st.markdown("---")
-
-def load_document_overview(workspace_path):
-    """Load document overview data from GraphRAG outputs."""
-    workspace = Path(workspace_path)
-    overview_data = {}
-    
-    try:
-        # Load community reports for high-level summaries
-        community_reports_file = workspace / "output" / "community_reports.parquet"
-        if not community_reports_file.exists():
-            community_reports_file = workspace / "output" / "artifacts" / "community_reports.parquet"
-        
-        if community_reports_file.exists():
-            reports_df = pd.read_parquet(community_reports_file)
-            # Get top-level summaries (highest rating)
-            if not reports_df.empty and 'rating' in reports_df.columns:
-                top_reports = reports_df.nlargest(3, 'rating')
-                overview_data['top_summaries'] = top_reports[['title', 'summary']].to_dict('records')
-            elif not reports_df.empty:
-                # Fallback if no rating column
-                overview_data['top_summaries'] = reports_df.head(3)[['title', 'summary']].to_dict('records')
-        
-        # Load document stats
-        stats_file = workspace / "stats.json"
-        if stats_file.exists():
-            with open(stats_file, 'r') as f:
-                overview_data['stats'] = json.load(f)
-        
-        return overview_data
-    except Exception as e:
-        logger.error(f"Error loading document overview: {e}")
-        return {}
-
-def load_key_entities(workspace_path, limit=10):
-    """Load key entities from GraphRAG outputs."""
-    workspace = Path(workspace_path)
-    
-    try:
-        entities_file = workspace / "output" / "entities.parquet"
-        if not entities_file.exists():
-            entities_file = workspace / "output" / "artifacts" / "entities.parquet"
-        
-        if entities_file.exists():
-            entities_df = pd.read_parquet(entities_file)
-            if not entities_df.empty:
-                # Sort by degree (most connected) or frequency
-                if 'degree' in entities_df.columns:
-                    top_entities = entities_df.nlargest(limit, 'degree')
-                elif 'frequency' in entities_df.columns:
-                    top_entities = entities_df.nlargest(limit, 'frequency')
-                else:
-                    top_entities = entities_df.head(limit)
-                
-                return top_entities[['title', 'type', 'description', 'degree']].to_dict('records') if 'degree' in entities_df.columns else top_entities[['title', 'type', 'description']].to_dict('records')
-        
-        return []
-    except Exception as e:
-        logger.error(f"Error loading key entities: {e}")
-        return []
-
-def generate_document_summary(workspace_path, max_chars=3000):
-    """Generate a general summary from the beginning of the document."""
-    workspace = Path(workspace_path)
-    
-    try:
-        # Check for cached summary first
-        cache_file = workspace / "document_summary_cache.json"
-        if cache_file.exists():
-            with open(cache_file, 'r') as f:
-                cached_summary = json.load(f)
-                return cached_summary
-        
-        # Load text units to get document content
-        text_units_file = workspace / "output" / "text_units.parquet"
-        if not text_units_file.exists():
-            text_units_file = workspace / "output" / "artifacts" / "text_units.parquet"
-        
-        if text_units_file.exists():
-            text_units_df = pd.read_parquet(text_units_file)
-            if not text_units_df.empty and 'text' in text_units_df.columns:
-                # Get the first text unit (usually contains document beginning)
-                first_text = text_units_df.iloc[0]['text']
-                
-                # Limit to max_chars but try to end at sentence boundary
-                if len(first_text) > max_chars:
-                    truncated_text = first_text[:max_chars]
-                    # Find last sentence ending
-                    last_period = truncated_text.rfind('.')
-                    last_exclaim = truncated_text.rfind('!')
-                    last_question = truncated_text.rfind('?')
-                    last_sentence_end = max(last_period, last_exclaim, last_question)
-                    
-                    if last_sentence_end > max_chars * 0.7:  # If we found a reasonable sentence ending
-                        text_for_summary = truncated_text[:last_sentence_end + 1]
-                    else:
-                        text_for_summary = truncated_text
-                else:
-                    text_for_summary = first_text
-                
-                # Generate AI summary using OpenAI
-                try:
-                    import openai
-                    import os
-                    
-                    # Use the same API key as GraphRAG
-                    api_key = os.getenv('GRAPHRAG_API_KEY') or os.getenv('OPENAI_API_KEY')
-                    if not api_key:
-                        return {"error": "No API key available for summary generation"}
-                    
-                    client = openai.OpenAI(api_key=api_key)
-                    
-                    prompt = f"""Please provide a concise summary of this document. Focus on:
-1. The document's main purpose
-2. Key topics or themes
-3. Important context or background
-4. Main points or objectives
-
-Keep the summary to 3-4 sentences maximum.
-
-Document text:
-{text_for_summary}"""
-
-                    response = client.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=[
-                            {"role": "system", "content": "You are a helpful assistant that creates concise document summaries."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        max_tokens=200,
-                        temperature=0.3
-                    )
-                    
-                    summary_text = response.choices[0].message.content.strip()
-                    
-                    # Create summary object
-                    summary_data = {
-                        "overview": summary_text,
-                        "chars_used": len(text_for_summary),
-                        "total_chars": len(first_text),
-                        "generated_at": pd.Timestamp.now().isoformat()
-                    }
-                    
-                    # Cache the result
-                    with open(cache_file, 'w') as f:
-                        json.dump(summary_data, f, indent=2)
-                    
-                    return summary_data
-                    
-                except Exception as e:
-                    logger.error(f"Error generating AI summary: {e}")
-                    # Fallback: return first few sentences
-                    sentences = text_for_summary.split('.')[:3]
-                    fallback_summary = '. '.join(sentences).strip()
-                    if fallback_summary and not fallback_summary.endswith('.'):
-                        fallback_summary += '.'
-                    
-                    return {
-                        "overview": fallback_summary or "Document content available but summary generation failed.",
-                        "chars_used": len(text_for_summary),
-                        "total_chars": len(first_text),
-                        "generated_at": pd.Timestamp.now().isoformat(),
-                        "fallback": True
-                    }
-        
-        return {"error": "No text content found for summary generation"}
-        
-    except Exception as e:
-        logger.error(f"Error generating document summary: {e}")
-        return {"error": f"Failed to generate summary: {str(e)}"}
-
-def get_top_communities(overview_data, limit=3):
-    """Filter and return the most relevant community reports."""
-    if not overview_data or 'top_summaries' not in overview_data:
-        return []
-    
-    summaries = overview_data['top_summaries']
-    
-    # If we have ratings, sort by rating
-    if summaries and 'rating' in summaries[0]:
-        sorted_summaries = sorted(summaries, key=lambda x: x.get('rating', 0), reverse=True)
-    else:
-        # Otherwise, use the first few (they're usually ordered by importance)
-        sorted_summaries = summaries
-    
-    return sorted_summaries[:limit]
-
-def render_document_summary_tab(selected_doc_ids):
-    """Render the Document Summary tab with metadata and AI-generated overviews."""
-    if not selected_doc_ids:
-        st.info("👈 Select documents from the sidebar to view document summaries.")
-        st.markdown("""
-        ### 📊 Document Summary
-        
-        This tab provides comprehensive overviews of your processed documents:
-        
-        - **Document Metadata**: File size, processing time, status
-        - **AI-Generated Summaries**: High-level document overviews
-        - **Key Entities**: Most important entities extracted from documents
-        - **Processing Statistics**: Entity counts, relationship counts, and performance metrics
-        """)
-        return
-    
-    # Get document details
-    all_docs = get_all_documents()
-    
-    # Filter selected documents
-    selected_docs = []
-    for doc in all_docs:
-        if doc['id'] in selected_doc_ids:
-            selected_docs.append(doc)
-    
-    if not selected_docs:
-        st.warning("⚠️ No document data found for selected documents.")
-        return
-    
-    # Header
-    st.markdown(f"""<div style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1rem 2rem; border-radius: 8px; margin-bottom: 1rem;">
-        <h3 style="color: white; margin: 0;">📊 Document Summary</h3>
-        <p style="color: rgba(255,255,255,0.9); margin: 0.5rem 0 0 0;">Comprehensive overview of {len(selected_docs)} selected document(s)</p>
-    </div>""", unsafe_allow_html=True)
-    
-    # Display each document
-    for doc in selected_docs:
-        with st.container():
-            # Document header
-            status_emoji = {
-                'COMPLETED': '✅',
-                'PROCESSING': '⏳',
-                'ERROR': '❌',
-                'UPLOADED': '📤',
-                'CANCELLED': '⏹️'
-            }.get(doc['status'], '❓')
-            
-            st.markdown(f"""
-            <div style="background: white; border-left: 4px solid #4CAF50; padding: 1.5rem; border-radius: 8px; margin: 1rem 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                <h4 style="margin: 0 0 0.5rem 0; color: #2C3E50;">{status_emoji} {doc['display_name']}</h4>
-                <p style="margin: 0; color: #666; font-size: 0.9rem;">Status: {doc['status']} • Created: {doc['created_at'][:16]}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Create columns for layout
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                # Document metadata
-                st.markdown("**📄 Document Information**")
-                
-                # Basic metadata
-                metadata_info = f"""
-                - **Original Filename**: {doc['original_filename']}
-                - **File Size**: {doc.get('file_size', 'Unknown')} bytes
-                - **Processing Time**: {doc.get('processing_time', 'Unknown')} seconds
-                - **Created**: {doc['created_at']}
-                - **Last Updated**: {doc['updated_at']}
-                """
-                st.markdown(metadata_info)
-                
-                # Load processing statistics if available
-                if doc['status'] == 'COMPLETED':
-                    try:
-                        # Load entities and relationships count
-                        entities, relationships = load_and_merge_graphs([doc['id']])
-                        if not entities.empty:
-                            st.markdown("**📊 Processing Results**")
-                            metrics_col1, metrics_col2 = st.columns(2)
-                            with metrics_col1:
-                                st.metric("Entities", len(entities))
-                            with metrics_col2:
-                                st.metric("Relationships", len(relationships))
-                    except Exception as e:
-                        st.warning(f"Could not load processing statistics: {e}")
-            
-            with col2:
-                # General Document Overview (NEW)
-                if doc['status'] == 'COMPLETED':
-                    st.markdown("**📝 General Document Overview**")
-                    
-                    # Generate document summary from beginning content
-                    doc_summary = generate_document_summary(doc['workspace_path'])
-                    
-                    if doc_summary and 'overview' in doc_summary:
-                        with st.expander("📄 Document Summary", expanded=True):
-                            st.markdown(doc_summary['overview'])
-                            
-                            # Show metadata about the summary
-                            if 'chars_used' in doc_summary:
-                                st.caption(f"📊 Based on {doc_summary['chars_used']:,} characters from document beginning")
-                            
-                            if doc_summary.get('fallback'):
-                                st.info("💡 Fallback summary (AI generation unavailable)")
-                    elif doc_summary and 'error' in doc_summary:
-                        st.warning(f"⚠️ Could not generate summary: {doc_summary['error']}")
-                    else:
-                        st.info("📋 Summary generation in progress...")
-                else:
-                    st.info(f"Document is {doc['status'].lower()}. Summary will be available once processing completes.")
-            
-            # Enhanced Community Insights Section (moved below)
-            if doc['status'] == 'COMPLETED':
-                st.markdown("**🏘️ Key Themes & Community Insights**")
-                
-                # Load document overview data
-                overview_data = load_document_overview(doc['workspace_path'])
-                
-                if overview_data and overview_data.get('top_summaries'):
-                    # Get top 3 most relevant communities
-                    relevant_communities = get_top_communities(overview_data, limit=3)
-                    
-                    if relevant_communities:
-                        for i, summary in enumerate(relevant_communities):
-                            community_title = summary.get('title', f'Community {i+1}')
-                            community_summary = summary.get('summary', 'No summary available')
-                            
-                            with st.expander(f"🏘️ {community_title}", expanded=(i == 0)):
-                                st.markdown(community_summary)
-                                
-                                # Show rating if available
-                                if 'rating' in summary:
-                                    st.caption(f"📊 Relevance Score: {summary['rating']:.1f}/10")
-                    else:
-                        st.info("No community insights available.")
-                else:
-                    st.info("Community analysis not yet available.")
-            
-            # Key entities section
-            if doc['status'] == 'COMPLETED':
-                st.markdown("**👥 Key Entities**")
-                
-                key_entities = load_key_entities(doc['workspace_path'], limit=8)
-                
-                if key_entities:
-                    # Display entities in a grid
-                    entity_cols = st.columns(4)
-                    for i, entity in enumerate(key_entities):
-                        with entity_cols[i % 4]:
-                            entity_type = entity.get('type', 'Unknown')
-                            entity_name = entity.get('title', 'Unknown')
-                            entity_desc = entity.get('description', 'No description')
-                            
-                            # Color coding for entity types
-                            type_colors = {
-                                'PERSON': '#FF6B6B',
-                                'ORGANIZATION': '#4ECDC4',
-                                'LOCATION': '#45B7D1',
-                                'EVENT': '#F7DC6F',
-                                'CONCEPT': '#82E0AA',
-                            }
-                            color = type_colors.get(entity_type, '#95A5A6')
-                            
-                            st.markdown(f"""
-                            <div style="background: {color}; color: white; padding: 0.5rem; border-radius: 6px; margin: 0.25rem 0; text-align: center; font-size: 0.8rem;">
-                                <strong>{entity_name}</strong><br>
-                                <em>{entity_type}</em>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-                            # Show description on hover/expander
-                            if entity_desc and len(entity_desc) > 50:
-                                with st.expander("ℹ️", expanded=False):
-                                    st.caption(entity_desc[:200] + "..." if len(entity_desc) > 200 else entity_desc)
-                else:
-                    st.info("No key entities extracted yet.")
-            
-            # Error information if failed
-            if doc['status'] == 'ERROR' and doc.get('error_message'):
-                st.error(f"**Error**: {doc['error_message']}")
-            
-            st.markdown("---")
 
 def render_chat_tab(selected_doc_ids):
     """Render the Chat Assistant tab."""
@@ -1486,8 +1186,8 @@ def render_chat_tab(selected_doc_ids):
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     
-    # Query method selection
-    col1, col2 = st.columns([3, 1])
+    # Query method and model selection
+    col1, col2 = st.columns([2, 2])
     with col1:
         query_method = st.selectbox(
             "Search Method:",
@@ -1496,6 +1196,29 @@ def render_chat_tab(selected_doc_ids):
             help="Local: specific details, Global: themes/patterns, Drift: contextual search, Basic: simple search",
             key="chat_query_method"
         )
+    
+    with col2:
+        # Initialize model selection in session state
+        if "selected_model" not in st.session_state:
+            st.session_state.selected_model = "o4-mini"
+        
+        model_options = ["o4-mini", "gpt-4.1-mini", "gpt-4.1-nano", "o3-mini", "gpt-4o-mini", "gpt-4o-mini-audio-preview", "o1-mini"]
+        
+        # Set default if current selection is not in new options
+        if st.session_state.selected_model not in model_options:
+            st.session_state.selected_model = "o4-mini"
+        
+        selected_model = st.selectbox(
+            "OpenAI Model:",
+            options=model_options,
+            index=model_options.index(st.session_state.selected_model),
+            help="Choose the OpenAI model for Q&A responses",
+            key="chat_model_selection"
+        )
+        
+        # Update session state when model changes
+        if selected_model != st.session_state.selected_model:
+            st.session_state.selected_model = selected_model
         
         # Query form to handle input properly
         with st.form("query_form", clear_on_submit=True):
@@ -1522,21 +1245,22 @@ def render_chat_tab(selected_doc_ids):
                         try:
                             # Select appropriate search method
                             if query_method == "global":
-                                result = global_search(selected_doc_ids, query_input)
+                                result = global_search(selected_doc_ids, query_input, model=selected_model)
                             elif query_method == "local":
-                                result = local_search(selected_doc_ids, query_input)
+                                result = local_search(selected_doc_ids, query_input, model=selected_model)
                             elif query_method == "drift":
-                                result = drift_search(selected_doc_ids, query_input)
+                                result = drift_search(selected_doc_ids, query_input, model=selected_model)
                             elif query_method == "basic":
-                                result = basic_search(selected_doc_ids, query_input)
+                                result = basic_search(selected_doc_ids, query_input, model=selected_model)
                             else:
-                                result = local_search(selected_doc_ids, query_input)
+                                result = local_search(selected_doc_ids, query_input, model=selected_model)
                             
                             # Add to chat history
                             chat_entry = {
                                 "query": query_input,
                                 "response": result.response,
                                 "method": query_method,
+                                "model": selected_model,
                                 "success": result.success,
                                 "source_documents": result.source_documents,
                                 "error": result.error_message,
@@ -1569,7 +1293,7 @@ def render_chat_tab(selected_doc_ids):
             # Show recent chats first (reverse order)
             for i, entry in enumerate(reversed(st.session_state.chat_history[-10:])):  # Show last 10 entries
                 with st.expander(f"🙋 {entry['query'][:50]}... ({entry['timestamp']})", expanded=(i == 0)):
-                    st.markdown(f"**Method:** {entry['method'].title()}")
+                    st.markdown(f"**Method:** {entry['method'].title()} | **Model:** {entry.get('model', 'o4-mini')}")
                     
                     if entry['success']:
                         st.markdown("**Response:**")
