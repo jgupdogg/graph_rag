@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  graphrag:
+    build: .
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./cache:/app/cache
+      - ./metadata.db:/app/metadata.db
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GRAPHRAG_API_KEY=${GRAPHRAG_API_KEY}
+      - DISPLAY=${DISPLAY:-:0}
+    devices:
+      - /dev/snd:/dev/snd
+    privileged: true
+    stdin_open: true
+    tty: true

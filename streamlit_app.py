@@ -16,6 +16,7 @@ import logging
 import os
 from datetime import datetime
 import streamlit.components.v1 as components
+from streamlit.components.v1 import html
 from pyvis_graph import (
     create_pyvis_network, 
     render_pyvis_network,
@@ -51,6 +52,168 @@ from config_manager import check_api_key_availability
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+def text_to_speech(text: str, rate: float = None, pitch: float = 1.0, voice_index: int = None):
+    """
+    Generates an invisible HTML component to trigger browser-based text-to-speech.
+    
+    Args:
+        text (str): The text to be spoken.
+        rate (float): The speed of the speech (0.1 to 10.0). Uses session state if None.
+        pitch (float): The pitch of the speech (0.0 to 2.0). Defaults to 1.0.
+        voice_index (int): Index of the voice to use. Uses session state if None.
+    """
+    # Use session state values if not provided
+    if rate is None:
+        rate = st.session_state.get('summary_tts_rate', 0.9)
+    if voice_index is None:
+        voice_index = st.session_state.get('selected_voice_index', 0)
+    
+    # Use json.dumps to safely escape the text for JavaScript
+    safe_text = json.dumps(text)
+    
+    # The JavaScript code to be executed in the browser
+    js_code = f"""
+        <script>
+            console.log('TTS: Script loaded, attempting to speak...');
+            
+            // Function to speak the text
+            function speakText(text, rate, pitch) {{
+                console.log('TTS: speakText called with text length:', text.length);
+                console.log('TTS: Text preview:', text.substring(0, 50));
+                
+                // Check if speech synthesis is supported
+                if (!('speechSynthesis' in window)) {{
+                    console.error('TTS: Speech synthesis not supported in this browser');
+                    alert('Text-to-Speech is not supported in your browser. Please try Chrome, Firefox, or Safari.');
+                    return;
+                }}
+                
+                console.log('TTS: Speech synthesis is supported');
+                
+                // Cancel any ongoing speech
+                window.speechSynthesis.cancel();
+                console.log('TTS: Previous speech cancelled');
+                
+                // Function to actually speak
+                function doSpeak() {{
+                    console.log('TTS: Creating utterance...');
+                    
+                    // Create a new SpeechSynthesisUtterance object
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    
+                    // Set properties
+                    utterance.lang = 'en-US';
+                    utterance.rate = rate;
+                    utterance.pitch = pitch;
+                    utterance.volume = 1.0;
+                    
+                    console.log('TTS: Utterance configured - rate:', rate, 'pitch:', pitch);
+                    
+                    // Add event handlers
+                    utterance.onstart = function(event) {{
+                        console.log('TTS: ✅ Speech STARTED successfully!');
+                    }};
+                    
+                    utterance.onend = function(event) {{
+                        console.log('TTS: Speech ended normally');
+                    }};
+                    
+                    utterance.onerror = function(event) {{
+                        console.error('TTS: ❌ Speech ERROR:', event.error, event);
+                        alert('TTS Error: ' + event.error);
+                    }};
+                    
+                    utterance.onpause = function(event) {{
+                        console.log('TTS: Speech paused');
+                    }};
+                    
+                    utterance.onresume = function(event) {{
+                        console.log('TTS: Speech resumed');
+                    }};
+                    
+                    utterance.onboundary = function(event) {{
+                        console.log('TTS: Speech boundary reached');
+                    }};
+                    
+                    // Get voices and log them
+                    const voices = window.speechSynthesis.getVoices();
+                    console.log('TTS: Available voices count:', voices.length);
+                    
+                    if (voices.length === 0) {{
+                        console.warn('TTS: ⚠️ No voices available on this system');
+                        alert(`TTS Error: No speech voices are available on your system.\\n\\nPossible solutions:\\n• On Linux: Install speech-dispatcher and espeak\\n• Try a different browser (Chrome/Edge usually work best)\\n• Check your system's accessibility settings\\n• Some corporate networks block TTS`);
+                        return;
+                    }}
+                    
+                    console.log('TTS: First few voices:');
+                    voices.slice(0, Math.min(3, voices.length)).forEach((voice, index) => {{
+                        console.log(`  ${{index}}: ${{voice.name}} (${{voice.lang}}) - ${{voice.localService ? 'Local' : 'Remote'}}`);
+                    }});
+                    
+                    // Use the selected voice index or window selection
+                    const voiceIndex = {voice_index} >= 0 ? {voice_index} : (window.selectedVoiceIndex || 0);
+                    
+                    if (voices.length > voiceIndex && voiceIndex >= 0) {{
+                        utterance.voice = voices[voiceIndex];
+                        console.log('TTS: Using selected voice:', voices[voiceIndex].name);
+                    }} else {{
+                        // Fallback to English voice
+                        const englishVoice = voices.find(voice => voice.lang.includes('en')) || voices[0];
+                        if (englishVoice) {{
+                            utterance.voice = englishVoice;
+                            console.log('TTS: Using fallback voice:', englishVoice.name);
+                        }}
+                    }}
+                    
+                    // Attempt to speak
+                    console.log('TTS: 🎤 Calling speechSynthesis.speak()...');
+                    try {{
+                        window.speechSynthesis.speak(utterance);
+                        console.log('TTS: speak() called successfully');
+                        
+                        // Check if it's actually speaking
+                        setTimeout(() => {{
+                            console.log('TTS: Speaking status check:', window.speechSynthesis.speaking);
+                            console.log('TTS: Pending status check:', window.speechSynthesis.pending);
+                        }}, 500);
+                        
+                    }} catch (error) {{
+                        console.error('TTS: Exception in speak():', error);
+                        alert('TTS Exception: ' + error.message);
+                    }}
+                }}
+                
+                // Wait for voices to load if needed
+                if (window.speechSynthesis.getVoices().length === 0) {{
+                    console.log('TTS: Waiting for voices to load...');
+                    window.speechSynthesis.addEventListener('voiceschanged', function() {{
+                        console.log('TTS: Voices loaded, attempting speech...');
+                        doSpeak();
+                    }}, {{ once: true }});
+                    
+                    // Fallback timeout
+                    setTimeout(() => {{
+                        if (window.speechSynthesis.getVoices().length === 0) {{
+                            console.warn('TTS: Voices still not loaded, trying anyway...');
+                            doSpeak();
+                        }}
+                    }}, 1000);
+                }} else {{
+                    console.log('TTS: Voices already available');
+                    doSpeak();
+                }}
+            }}
+            
+            // Add a small delay then speak
+            setTimeout(() => {{
+                speakText({safe_text}, {rate}, {pitch});
+            }}, 100);
+        </script>
+    """
+    
+    # Use html() to execute the JavaScript with invisible component
+    html(js_code, height=0)
 
 # Page configuration
 st.set_page_config(
@@ -99,7 +262,7 @@ if not check_api_key_availability():
     st.stop()
 
 # Cache data loading
-@st.cache_data
+@st.cache_data(hash_funcs={pd.DataFrame: lambda df: df.to_json()})
 def load_multi_document_data(selected_doc_ids):
     """Load GraphRAG output data from multiple documents."""
     if not selected_doc_ids:
@@ -112,7 +275,7 @@ def load_multi_document_data(selected_doc_ids):
         st.error(f"Error loading data: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-@st.cache_data
+@st.cache_data(hash_funcs={pd.DataFrame: lambda df: df.to_json()})
 def create_networkx_graph(entities, relationships):
     """Create NetworkX graph from entities and relationships."""
     G = nx.Graph()
@@ -733,9 +896,242 @@ def render_document_summary_tab(selected_doc_ids):
     all_docs = get_all_documents()
     selected_docs = [doc for doc in all_docs if doc['id'] in selected_doc_ids]
     
-    # Header
-    st.title("📊 Document Summary")
-    st.caption("AI-powered overview, community insights, and document metadata")
+    # Header with TTS controls
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.title("📊 Document Summary")
+        st.caption("AI-powered overview, community insights, and document metadata")
+    with col2:
+        st.markdown("### 🔊 Audio")
+        # Initialize TTS settings for summary tab if not exists
+        if "summary_tts_enabled" not in st.session_state:
+            st.session_state.summary_tts_enabled = False
+        if "summary_tts_rate" not in st.session_state:
+            st.session_state.summary_tts_rate = 0.8
+        
+        # TTS toggle for summaries
+        summary_tts_enabled = st.checkbox(
+            "Auto-read summaries",
+            value=st.session_state.summary_tts_enabled,
+            help="Automatically read document summaries aloud",
+            key="summary_tts_toggle"
+        )
+        st.session_state.summary_tts_enabled = summary_tts_enabled
+        
+        # Stop speech button
+        if st.button("⏹️ Stop", help="Stop all audio", key="summary_stop_speech"):
+            stop_summary_speech_html = """
+            <script>
+            window.speechSynthesis.cancel();
+            console.log('TTS: Speech cancelled');
+            </script>
+            """
+            html(stop_summary_speech_html, height=0)
+        
+        # Test TTS button for debugging
+        if st.button("🧪 Test TTS", help="Test text-to-speech with simple text", key="test_tts"):
+            text_to_speech("Hello! This is a test of the text to speech feature. Can you hear me?")
+        
+        # Voice status check button
+        if st.button("🔍 Check TTS Status", help="Check if text-to-speech is available", key="check_tts_status"):
+            check_tts_html = """
+            <script>
+            function checkTTSStatus() {
+                console.log('=== TTS STATUS CHECK ===');
+                
+                // Check basic support
+                if (!('speechSynthesis' in window)) {
+                    alert('❌ Speech Synthesis API not supported in this browser');
+                    return;
+                }
+                
+                console.log('✅ Speech Synthesis API is supported');
+                
+                // Check voices
+                const voices = window.speechSynthesis.getVoices();
+                console.log('Voices available:', voices.length);
+                
+                let statusMessage = `TTS Status Report:\\n`;
+                statusMessage += `• Browser: ${navigator.userAgent.split(' ')[0]}\\n`;
+                statusMessage += `• Speech API: ✅ Supported\\n`;
+                statusMessage += `• Available voices: ${voices.length}\\n`;
+                
+                if (voices.length === 0) {
+                    statusMessage += `\\n❌ NO VOICES AVAILABLE\\n\\nThis is the root cause of TTS failure.\\n\\nSolutions for Linux:\\n`;
+                    statusMessage += `• Install: sudo apt install espeak espeak-data libespeak1 libespeak-dev\\n`;
+                    statusMessage += `• Install: sudo apt install speech-dispatcher\\n`;
+                    statusMessage += `• Try different browser (Chrome/Chromium usually work best)\\n`;
+                    statusMessage += `• Check: sudo systemctl status speech-dispatcher\\n`;
+                } else {
+                    statusMessage += `\\n✅ VOICES AVAILABLE:\\n`;
+                    voices.forEach((voice, i) => {
+                        if (i < 5) { // Show first 5 voices
+                            statusMessage += `  ${i+1}. ${voice.name} (${voice.lang})${voice.default ? ' [DEFAULT]' : ''}\\n`;
+                        }
+                    });
+                }
+                
+                alert(statusMessage);
+                console.log('=== END TTS STATUS ===');
+            }
+            
+            // Wait for voices then check
+            if (window.speechSynthesis.getVoices().length === 0) {
+                window.speechSynthesis.addEventListener('voiceschanged', checkTTSStatus, { once: true });
+                setTimeout(checkTTSStatus, 1000); // Fallback
+            } else {
+                checkTTSStatus();
+            }
+            </script>
+            """
+            html(check_tts_html, height=0)
+    
+    # Voice Settings (expandable)
+    with st.expander("🎛️ Voice Settings", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Speech rate control
+            summary_tts_rate = st.slider(
+                "Speech Speed",
+                min_value=0.3,
+                max_value=2.0,
+                value=st.session_state.get('summary_tts_rate', 0.8),
+                step=0.1,
+                help="Adjust speaking speed (0.3 = very slow, 2.0 = very fast)",
+                key="summary_tts_rate_slider"
+            )
+            st.session_state.summary_tts_rate = summary_tts_rate
+            
+            # Initialize voice selection
+            if "selected_voice_index" not in st.session_state:
+                st.session_state.selected_voice_index = 0
+        
+        with col2:
+            # Voice selection dropdown (populated by JavaScript)
+            voice_selection_html = f"""
+            <div id="voice-selector-container">
+                <select id="voice-selector" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ddd;">
+                    <option value="-1">Loading voices...</option>
+                </select>
+            </div>
+            <script>
+            function loadVoices() {{
+                const voices = window.speechSynthesis.getVoices();
+                const select = document.getElementById('voice-selector');
+                
+                if (voices.length > 0) {{
+                    select.innerHTML = '';
+                    
+                    // Group voices by language
+                    const englishVoices = voices.filter(v => v.lang.startsWith('en'));
+                    const otherVoices = voices.filter(v => !v.lang.startsWith('en'));
+                    
+                    // Add English voices first
+                    if (englishVoices.length > 0) {{
+                        const optgroup = document.createElement('optgroup');
+                        optgroup.label = 'English Voices';
+                        
+                        englishVoices.forEach((voice, index) => {{
+                            const option = document.createElement('option');
+                            option.value = voices.indexOf(voice);
+                            option.text = voice.name + ' (' + voice.lang + ')';
+                            if (voice.default) option.text += ' [DEFAULT]';
+                            optgroup.appendChild(option);
+                        }});
+                        
+                        select.appendChild(optgroup);
+                    }}
+                    
+                    // Add other voices
+                    if (otherVoices.length > 0) {{
+                        const optgroup = document.createElement('optgroup');
+                        optgroup.label = 'Other Languages';
+                        
+                        otherVoices.forEach(voice => {{
+                            const option = document.createElement('option');
+                            option.value = voices.indexOf(voice);
+                            option.text = voice.name + ' (' + voice.lang + ')';
+                            optgroup.appendChild(option);
+                        }});
+                        
+                        select.appendChild(optgroup);
+                    }}
+                    
+                    // Restore selected voice
+                    select.value = {st.session_state.get('selected_voice_index', 0)};
+                    
+                    // Handle voice selection
+                    select.onchange = function() {{
+                        const selectedIndex = parseInt(select.value);
+                        // Store in session state via hidden input
+                        const hiddenInput = document.getElementById('selected-voice-index');
+                        if (hiddenInput) {{
+                            hiddenInput.value = selectedIndex;
+                        }}
+                        console.log('Selected voice index:', selectedIndex);
+                        window.selectedVoiceIndex = selectedIndex;
+                    }};
+                    
+                    // Set initial selection
+                    window.selectedVoiceIndex = parseInt(select.value);
+                    
+                }} else {{
+                    select.innerHTML = '<option value="-1">No voices available</option>';
+                }}
+            }}
+            
+            // Load voices on page load
+            if (window.speechSynthesis.getVoices().length === 0) {{
+                window.speechSynthesis.addEventListener('voiceschanged', loadVoices, {{ once: true }});
+            }} else {{
+                loadVoices();
+            }}
+            
+            // Also try loading after a delay
+            setTimeout(loadVoices, 500);
+            </script>
+            """
+            
+            st.markdown("**Select Voice:**")
+            components.html(voice_selection_html, height=60)
+            
+            # Test button with current settings
+            if st.button("🎤 Test Settings", help="Test with current voice and speed", key="test_voice_settings"):
+                test_text = "Testing voice settings. This is how I will sound when reading your documents."
+                test_settings_html = f"""
+                <script>
+                function testVoiceSettings() {{
+                    const text = "{test_text}";
+                    const rate = {summary_tts_rate};
+                    const voiceIndex = window.selectedVoiceIndex || 0;
+                    
+                    window.speechSynthesis.cancel();
+                    
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.rate = rate;
+                    utterance.pitch = 1.0;
+                    utterance.volume = 1.0;
+                    
+                    const voices = window.speechSynthesis.getVoices();
+                    if (voices.length > voiceIndex && voiceIndex >= 0) {{
+                        utterance.voice = voices[voiceIndex];
+                        console.log('Testing with voice:', voices[voiceIndex].name);
+                    }}
+                    
+                    console.log('Testing with rate:', rate);
+                    window.speechSynthesis.speak(utterance);
+                }}
+                
+                // Wait for voices then test
+                if (window.speechSynthesis.getVoices().length === 0) {{
+                    setTimeout(testVoiceSettings, 500);
+                }} else {{
+                    testVoiceSettings();
+                }}
+                </script>
+                """
+                html(test_settings_html, height=0)
     
     # AI-Generated Document Overview Section
     st.subheader("🤖 AI-Generated Document Overview")
@@ -747,9 +1143,24 @@ def render_document_summary_tab(selected_doc_ids):
         # Display the AI summary with better contrast
         st.markdown("### 📋 Comprehensive Document Analysis")
         
-        # Show the AI-generated summary with proper styling
-        st.markdown("**AI Summary:**")
-        st.success(ai_summary_data['ai_summary'])
+        # Show the AI-generated summary with proper styling and TTS
+        col1, col2 = st.columns([10, 1])
+        with col1:
+            st.markdown("**AI Summary:**")
+            st.success(ai_summary_data['ai_summary'])
+        with col2:
+            st.markdown("**🔊**")
+            # Add TTS button for the AI summary
+            if st.button("🎤 Read Summary", key="tts_ai_summary", help="Read the AI summary aloud"):
+                summary_text = ai_summary_data['ai_summary']
+                # Use current voice settings
+                text_to_speech(summary_text)
+        
+        # Auto-read summary if enabled
+        if st.session_state.get('summary_tts_enabled', False):
+            summary_text = ai_summary_data['ai_summary']
+            # Use current voice settings for auto-read
+            text_to_speech(summary_text)
         
         # Show additional metadata in columns
         col1, col2, col3 = st.columns(3)
@@ -1186,8 +1597,8 @@ def render_chat_tab(selected_doc_ids):
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     
-    # Query method and model selection
-    col1, col2 = st.columns([2, 2])
+    # Query method, model selection, and TTS controls
+    col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
         query_method = st.selectbox(
             "Search Method:",
@@ -1219,6 +1630,55 @@ def render_chat_tab(selected_doc_ids):
         # Update session state when model changes
         if selected_model != st.session_state.selected_model:
             st.session_state.selected_model = selected_model
+    
+    with col3:
+        st.markdown("**🔊 TTS**")
+        # Initialize TTS settings
+        if "tts_enabled" not in st.session_state:
+            st.session_state.tts_enabled = True
+        if "tts_rate" not in st.session_state:
+            st.session_state.tts_rate = 0.9
+        
+        # TTS toggle
+        tts_enabled = st.checkbox(
+            "Auto-read",
+            value=st.session_state.tts_enabled,
+            help="Automatically read new responses aloud",
+            key="tts_toggle"
+        )
+        st.session_state.tts_enabled = tts_enabled
+        
+        # Stop all speech button
+        if st.button("⏹️", help="Stop all speech", key="stop_speech"):
+            stop_speech_html = """
+            <script>
+            window.speechSynthesis.cancel();
+            console.log('TTS: Chat speech cancelled');
+            </script>
+            """
+            html(stop_speech_html, height=0)
+    
+    # TTS Settings (expandable)
+    with st.expander("🔊 Voice Settings", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            # Speech rate control
+            tts_rate = st.slider(
+                "Speech Rate",
+                min_value=0.3,
+                max_value=2.0,
+                value=st.session_state.get('tts_rate', 0.9),
+                step=0.1,
+                help="Adjust speaking speed",
+                key="tts_rate_slider"
+            )
+            st.session_state.tts_rate = tts_rate
+        
+        with col2:
+            # Test voice button
+            if st.button("🎤 Test Voice", help="Test current voice settings"):
+                test_text = "This is a test of the text to speech feature. You can adjust the speed and other settings."
+                text_to_speech(test_text, rate=tts_rate)
         
         # Query form to handle input properly
         with st.form("query_form", clear_on_submit=True):
@@ -1273,6 +1733,11 @@ def render_chat_tab(selected_doc_ids):
                             # Show success message
                             if result.success:
                                 st.success(f"✅ Query completed using {query_method} search!")
+                                
+                                # Auto-read response if TTS is enabled
+                                if st.session_state.get('tts_enabled', False):
+                                    tts_rate = st.session_state.get('tts_rate', 0.9)
+                                    text_to_speech(result.response, rate=tts_rate)
                             else:
                                 st.error(f"❌ Query failed: {result.error_message}")
                                 
@@ -1296,8 +1761,14 @@ def render_chat_tab(selected_doc_ids):
                     st.markdown(f"**Method:** {entry['method'].title()} | **Model:** {entry.get('model', 'o4-mini')}")
                     
                     if entry['success']:
-                        st.markdown("**Response:**")
-                        st.markdown(entry['response'])
+                        col1, col2 = st.columns([10, 1])
+                        with col1:
+                            st.markdown("**Response:**")
+                            st.markdown(entry['response'])
+                        with col2:
+                            # Add TTS button for each response
+                            if st.button("🔊", key=f"tts_{i}_{hash(entry['response'])}", help="Read aloud"):
+                                text_to_speech(entry['response'])
                         
                         if entry['source_documents']:
                             st.markdown("**Sources:**")
