@@ -49,6 +49,7 @@ from query_logic import (
     clear_chat_history
 )
 from config_manager import check_api_key_availability
+from openai_tts_simple import render_simple_tts_section
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -1144,17 +1145,15 @@ def render_document_summary_tab(selected_doc_ids):
         st.markdown("### 📋 Comprehensive Document Analysis")
         
         # Show the AI-generated summary with proper styling and TTS
-        col1, col2 = st.columns([10, 1])
-        with col1:
-            st.markdown("**AI Summary:**")
-            st.success(ai_summary_data['ai_summary'])
-        with col2:
-            st.markdown("**🔊**")
-            # Add TTS button for the AI summary
-            if st.button("🎤 Read Summary", key="tts_ai_summary", help="Read the AI summary aloud"):
-                summary_text = ai_summary_data['ai_summary']
-                # Use current voice settings
-                text_to_speech(summary_text)
+        st.markdown("**AI Summary:**")
+        st.success(ai_summary_data['ai_summary'])
+        
+        # Browser TTS button
+        if st.button("🔊 Browser TTS", key="summary_browser_tts", help="Read summary with browser TTS"):
+            text_to_speech(ai_summary_data['ai_summary'])
+        
+        # OpenAI TTS Section for Summary
+        render_simple_tts_section(ai_summary_data['ai_summary'], "summary")
         
         # Auto-read summary if enabled
         if st.session_state.get('summary_tts_enabled', False):
@@ -1695,61 +1694,93 @@ def render_chat_tab(selected_doc_ids):
                 clear_button = st.form_submit_button("🗑️ Clear Chat")
             
             if ask_button and query_input.strip():
-                # Validate query
-                is_valid, error_msg = validate_query(query_input)
-                if not is_valid:
-                    st.error(f"Invalid query: {error_msg}")
-                else:
-                    # Run query
-                    with st.spinner(f"Running {query_method} search..."):
-                        try:
-                            # Select appropriate search method
-                            if query_method == "global":
-                                result = global_search(selected_doc_ids, query_input, model=selected_model)
-                            elif query_method == "local":
-                                result = local_search(selected_doc_ids, query_input, model=selected_model)
-                            elif query_method == "drift":
-                                result = drift_search(selected_doc_ids, query_input, model=selected_model)
-                            elif query_method == "basic":
-                                result = basic_search(selected_doc_ids, query_input, model=selected_model)
-                            else:
-                                result = local_search(selected_doc_ids, query_input, model=selected_model)
-                            
-                            # Add to chat history
-                            chat_entry = {
-                                "query": query_input,
-                                "response": result.response,
-                                "method": query_method,
-                                "model": selected_model,
-                                "success": result.success,
-                                "source_documents": result.source_documents,
-                                "error": result.error_message,
-                                "timestamp": pd.Timestamp.now().strftime("%H:%M:%S"),
-                                "raw_response": result.raw_response,
-                                "context_info": result.context_info
-                            }
-                            st.session_state.chat_history.append(chat_entry)
-                            
-                            # Show success message
-                            if result.success:
-                                st.success(f"✅ Query completed using {query_method} search!")
-                                
-                                # Auto-read response if TTS is enabled
-                                if st.session_state.get('tts_enabled', False):
-                                    tts_rate = st.session_state.get('tts_rate', 0.9)
-                                    text_to_speech(result.response, rate=tts_rate)
-                            else:
-                                st.error(f"❌ Query failed: {result.error_message}")
-                                
-                        except Exception as e:
-                            st.error(f"Query failed: {str(e)}")
+                # Store the query and trigger processing
+                st.session_state.pending_query = query_input
+                st.session_state.pending_method = query_method
+                st.session_state.pending_model = selected_model
             
             elif ask_button and not query_input.strip():
-                st.warning("Please enter a question first.")
+                st.session_state.query_error = "Please enter a question first."
             
             if clear_button:
                 st.session_state.chat_history = []
-                st.success("Chat history cleared!")
+                st.session_state.clear_success = True
+        
+        # Process pending query outside the form
+        if hasattr(st.session_state, 'pending_query'):
+            query = st.session_state.pending_query
+            method = st.session_state.pending_method
+            model = st.session_state.pending_model
+            
+            # Clear the pending query
+            del st.session_state.pending_query
+            del st.session_state.pending_method
+            del st.session_state.pending_model
+            
+            # Validate query
+            is_valid, error_msg = validate_query(query)
+            if not is_valid:
+                st.error(f"Invalid query: {error_msg}")
+            else:
+                # Run query
+                with st.spinner(f"Running {method} search..."):
+                    try:
+                        # Select appropriate search method
+                        if method == "global":
+                            result = global_search(selected_doc_ids, query, model=model)
+                        elif method == "local":
+                            result = local_search(selected_doc_ids, query, model=model)
+                        elif method == "drift":
+                            result = drift_search(selected_doc_ids, query, model=model)
+                        elif method == "basic":
+                            result = basic_search(selected_doc_ids, query, model=model)
+                        else:
+                            result = local_search(selected_doc_ids, query, model=model)
+                        
+                        # Add to chat history
+                        chat_entry = {
+                            "query": query,
+                            "response": result.response,
+                            "method": method,
+                            "model": model,
+                            "success": result.success,
+                            "source_documents": result.source_documents,
+                            "error": result.error_message,
+                            "timestamp": pd.Timestamp.now().strftime("%H:%M:%S"),
+                            "raw_response": result.raw_response,
+                            "context_info": result.context_info
+                        }
+                        st.session_state.chat_history.append(chat_entry)
+                        
+                        # Show results
+                        if result.success:
+                            st.success(f"✅ Query completed using {method} search!")
+                            
+                            # Display the response
+                            st.markdown("### 💬 Response")
+                            st.markdown(result.response)
+                            
+                            # OpenAI TTS Section (now outside the form)
+                            render_simple_tts_section(result.response, "immediate")
+                            
+                            # Auto-read response if TTS is enabled
+                            if st.session_state.get('tts_enabled', False):
+                                tts_rate = st.session_state.get('tts_rate', 0.9)
+                                text_to_speech(result.response, rate=tts_rate)
+                        else:
+                            st.error(f"❌ Query failed: {result.error_message}")
+                            
+                    except Exception as e:
+                        st.error(f"Query failed: {str(e)}")
+        
+        # Show error or success messages
+        if hasattr(st.session_state, 'query_error'):
+            st.warning(st.session_state.query_error)
+            del st.session_state.query_error
+        
+        if hasattr(st.session_state, 'clear_success'):
+            st.success("Chat history cleared!")
+            del st.session_state.clear_success
         
         # Display chat history
         if st.session_state.chat_history:
@@ -1758,17 +1789,18 @@ def render_chat_tab(selected_doc_ids):
             # Show recent chats first (reverse order)
             for i, entry in enumerate(reversed(st.session_state.chat_history[-10:])):  # Show last 10 entries
                 with st.expander(f"🙋 {entry['query'][:50]}... ({entry['timestamp']})", expanded=(i == 0)):
-                    st.markdown(f"**Method:** {entry['method'].title()} | **Model:** {entry.get('model', 'o4-mini')}")
-                    
                     if entry['success']:
-                        col1, col2 = st.columns([10, 1])
-                        with col1:
-                            st.markdown("**Response:**")
-                            st.markdown(entry['response'])
-                        with col2:
-                            # Add TTS button for each response
-                            if st.button("🔊", key=f"tts_{i}_{hash(entry['response'])}", help="Read aloud"):
-                                text_to_speech(entry['response'])
+                        st.markdown("**Response:**")
+                        st.markdown(entry['response'])
+                        
+                        # Browser-based TTS
+                        if st.button("🔊 Browser TTS", key=f"browser_tts_{i}_{hash(entry['response'])}", help="Read aloud with browser"):
+                            text_to_speech(entry['response'])
+                        
+                        # OpenAI TTS Section
+                        render_simple_tts_section(entry['response'], f"history_{i}_{hash(entry['response'])}")
+                        
+                        st.markdown(f"**Method:** {entry['method'].title()} | **Model:** {entry.get('model', 'o4-mini')}")
                         
                         if entry['source_documents']:
                             st.markdown("**Sources:**")
