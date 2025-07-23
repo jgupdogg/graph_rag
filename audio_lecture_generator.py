@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 from datetime import datetime
 import hashlib
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,24 @@ class LectureSection:
 class AudioLectureGenerator:
     """Generates audio lecture scripts from document data"""
     
-    def __init__(self):
+    def __init__(self, use_dynamic_format: bool = True, api_key: Optional[str] = None):
+        self.use_dynamic_format = use_dynamic_format
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("GRAPHRAG_API_KEY")
+        
+        # Initialize dynamic formatter if enabled
+        if self.use_dynamic_format:
+            try:
+                from dynamic_lecture_formatter import DynamicLectureFormatter
+                self.dynamic_formatter = DynamicLectureFormatter(self.api_key)
+                logger.info("Dynamic lecture formatting enabled")
+            except ImportError:
+                logger.warning("Dynamic formatter not available, using standard format")
+                self.use_dynamic_format = False
+                self.dynamic_formatter = None
+        else:
+            self.dynamic_formatter = None
+        
+        # Standard format templates (fallback)
         self.transition_phrases = [
             "Now, let's move on to",
             "Next, we'll explore",
@@ -70,7 +88,8 @@ class AudioLectureGenerator:
         include_entities: bool = True,
         include_relationships: bool = True,
         include_bullet_points: bool = True,
-        additional_context: Optional[Dict[str, Any]] = None
+        additional_context: Optional[Dict[str, Any]] = None,
+        use_dynamic: Optional[bool] = None
     ) -> Tuple[List[LectureSection], str]:
         """
         Generate a complete lecture script from document data.
@@ -78,6 +97,26 @@ class AudioLectureGenerator:
         Returns:
             Tuple of (lecture_sections, full_script_text)
         """
+        # Determine whether to use dynamic formatting
+        use_dynamic_format = use_dynamic if use_dynamic is not None else self.use_dynamic_format
+        
+        # Use dynamic formatter if available and enabled
+        if use_dynamic_format and self.dynamic_formatter:
+            try:
+                return self._generate_dynamic_lecture(
+                    document_summary,
+                    section_summaries,
+                    detail_level,
+                    include_entities,
+                    include_relationships,
+                    include_bullet_points,
+                    additional_context
+                )
+            except Exception as e:
+                logger.error(f"Dynamic formatting failed, falling back to standard: {e}")
+                # Fall back to standard format
+        
+        # Standard format generation (original logic)
         lecture_sections = []
         
         # 1. Create introduction
@@ -556,3 +595,81 @@ class AudioLectureGenerator:
             scripts = [s for s in scripts if s.get('detail_level') == detail_level.name]
         
         return scripts[0] if scripts else None
+    
+    def _generate_dynamic_lecture(
+        self,
+        document_summary: Dict[str, Any],
+        section_summaries: Dict[str, str],
+        detail_level: LectureDetailLevel,
+        include_entities: bool,
+        include_relationships: bool,
+        include_bullet_points: bool,
+        additional_context: Optional[Dict[str, Any]]
+    ) -> Tuple[List[LectureSection], str]:
+        """Generate lecture using dynamic AI-driven format"""
+        
+        # Prepare document data
+        entities = additional_context.get('entities', []) if additional_context and include_entities else []
+        relationships = additional_context.get('relationships', []) if additional_context and include_relationships else []
+        community_reports = additional_context.get('community_reports', []) if additional_context else []
+        
+        # Estimate target duration based on detail level
+        target_durations = {
+            LectureDetailLevel.OVERVIEW: 3,
+            LectureDetailLevel.MAIN_POINTS: 5,
+            LectureDetailLevel.STANDARD: 10,
+            LectureDetailLevel.DETAILED: 15,
+            LectureDetailLevel.COMPREHENSIVE: 20
+        }
+        target_duration = target_durations.get(detail_level, 10)
+        
+        # Get AI-generated blueprint
+        blueprint = self.dynamic_formatter.analyze_document_for_lecture(
+            document_summary,
+            section_summaries,
+            entities,
+            relationships,
+            community_reports,
+            target_duration
+        )
+        
+        # Generate components based on blueprint
+        document_data = {
+            "document_summary": document_summary,
+            "section_summaries": section_summaries,
+            "entities": entities,
+            "relationships": relationships,
+            "community_reports": community_reports,
+            "bullet_points": additional_context.get('bullet_points', []) if additional_context else []
+        }
+        
+        components = self.dynamic_formatter.generate_lecture_components(
+            blueprint,
+            document_data
+        )
+        
+        # Compile final script
+        full_script = self.dynamic_formatter.compile_lecture_script(
+            components,
+            blueprint
+        )
+        
+        # Convert components to LectureSection format for compatibility
+        lecture_sections = []
+        for component in components:
+            lecture_sections.append(LectureSection(
+                title=component.metadata.get('section', component.component_type),
+                content=component.content,
+                level=1 if component.component_type in ['introduction', 'closing'] else 2,
+                section_type=component.component_type,
+                entities=[e['title'] for e in entities[:5]] if component.component_type == 'key_concepts' else None,
+                relationships=[f"{r['source']} - {r['target']}" for r in relationships[:3]] if component.component_type == 'relationships' else None,
+                key_points=blueprint.key_takeaways if component.component_type == 'key_takeaways' else None
+            ))
+        
+        # Add metadata about the dynamic generation
+        logger.info(f"Generated dynamic lecture with style: {blueprint.style.value}, "
+                   f"emphasis: {[e.value for e in blueprint.emphasis]}, "
+                   f"duration: {blueprint.estimated_duration} minutes")
+        
+        return lecture_sections, full_script

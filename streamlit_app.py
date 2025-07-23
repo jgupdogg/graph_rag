@@ -1494,7 +1494,7 @@ def render_document_summary_tab(selected_doc_ids):
         
         # Additional options
         with st.expander("🔧 Advanced Options", expanded=False):
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 include_entities = st.checkbox(
@@ -1520,6 +1520,15 @@ def render_document_summary_tab(selected_doc_ids):
                     disabled=True,
                     help="Add professional intro and outro music"
                 )
+            
+            with col3:
+                use_dynamic_format = st.checkbox(
+                    "🤖 AI-Driven Format",
+                    value=True,
+                    help="Let AI analyze the document and choose the best lecture style (narrative, tutorial, academic, etc.)"
+                )
+                if use_dynamic_format:
+                    st.info("AI will analyze your document and create a custom lecture format")
         
         # Show previously generated lectures
         if selected_docs:
@@ -1640,7 +1649,8 @@ def render_document_summary_tab(selected_doc_ids):
                     include_entities=include_entities,
                     include_relationships=include_relationships,
                     include_bullet_points=include_bullet_points,
-                    additional_context=additional_context
+                    additional_context=additional_context,
+                    use_dynamic=use_dynamic_format
                 )
                 
                 # Save the lecture script
