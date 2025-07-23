@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fix missing section summaries for existing documents.
+Fix missing section summaries for existing documents (automated version).
 This script regenerates section summaries for documents that don't have them.
 """
 
@@ -11,6 +11,10 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any
 from datetime import datetime
+
+# Load environment variables first
+from dotenv import load_dotenv
+load_dotenv()
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -23,10 +27,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def check_and_fix_section_summaries():
-    """Check all documents and regenerate missing section summaries."""
+def fix_section_summaries_auto():
+    """Check all documents and regenerate missing section summaries automatically."""
     
-    print("=== Section Summaries Fix Tool ===\n")
+    print("=== Section Summaries Fix Tool (Automated) ===\n")
     
     # Get all documents
     all_docs = get_all_documents()
@@ -59,17 +63,6 @@ def check_and_fix_section_summaries():
         print("\nAll documents have section summaries! Nothing to fix.")
         return
     
-    # Ask user if they want to fix
-    print(f"\nWould you like to generate section summaries for the {len(documents_missing_summaries)} documents missing them?")
-    response = input("Type 'yes' to proceed: ").strip().lower()
-    
-    if response != 'yes':
-        print("Aborted.")
-        return
-    
-    # Fix missing summaries
-    print("\nGenerating section summaries...")
-    
     # Get API key from environment
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GRAPHRAG_API_KEY")
     if not api_key:
@@ -77,6 +70,9 @@ def check_and_fix_section_summaries():
         print("Please set your OpenAI API key:")
         print("  export OPENAI_API_KEY='your-api-key-here'")
         return
+    
+    # Fix missing summaries automatically
+    print(f"\nAutomatically generating section summaries for {len(documents_missing_summaries)} documents...")
     
     processor = EnhancedDocumentProcessor(api_key=api_key)
     chunker = StructureAwareChunker(api_key=api_key)
@@ -108,13 +104,19 @@ def check_and_fix_section_summaries():
             
             # Check for input file
             input_dir = workspace_dir / "input"
-            input_files = list(input_dir.glob("*")) if input_dir.exists() else []
             
-            if not input_files:
-                print(f"  ❌ No input file found in {input_dir}")
-                continue
+            # Look for text files first
+            txt_files = list(input_dir.glob("*.txt")) if input_dir.exists() else []
             
-            input_file = input_files[0]
+            if txt_files:
+                input_file = txt_files[0]
+            else:
+                # Fallback to any file
+                input_files = list(input_dir.glob("*")) if input_dir.exists() else []
+                if not input_files:
+                    print(f"  ❌ No input file found in {input_dir}")
+                    continue
+                input_file = input_files[0]
             
             # Read document content
             with open(input_file, 'r', encoding='utf-8') as f:
@@ -154,11 +156,11 @@ def check_and_fix_section_summaries():
             
         except Exception as e:
             print(f"  ❌ Error processing document: {e}")
-            logger.error(f"Failed to fix section summaries for {doc['display_name']}: {e}")
+            logger.error(f"Failed to fix section summaries for {doc['display_name']}: {e}", exc_info=True)
     
     print(f"\n✅ Fixed section summaries for {fixed_count}/{len(documents_missing_summaries)} documents")
     print("\nNote: You may need to restart the Streamlit app to see the changes.")
 
 
 if __name__ == "__main__":
-    check_and_fix_section_summaries()
+    fix_section_summaries_auto()
