@@ -1208,6 +1208,69 @@ def render_document_summary_tab(selected_doc_ids):
                         with st.expander("❌ Error Details", expanded=False):
                             st.error(doc_details['error_message'])
     
+    # Section Summaries
+    st.markdown("---")
+    st.subheader("📑 Document Section Summaries")
+    st.caption("Hierarchical section summaries with individual text-to-speech controls")
+    
+    # Display section summaries for each selected document
+    for doc in selected_docs:
+        doc_details = get_document_by_id(doc['id'])
+        if doc_details and doc_details.get('section_summaries'):
+            with st.expander(f"📑 Sections: {doc_details['display_name']}", expanded=len(selected_docs) == 1):
+                section_summaries = doc_details['section_summaries']
+                
+                # Create a hierarchical display of sections
+                st.markdown(f"**Found {len(section_summaries)} sections**")
+                
+                for i, (section_path, summary) in enumerate(section_summaries.items()):
+                    # Create a container for each section
+                    with st.container():
+                        # Section header with hierarchy indication
+                        hierarchy_level = section_path.count(' > ')
+                        indent = "&nbsp;" * (hierarchy_level * 4)
+                        st.markdown(f"{indent}**{section_path}**")
+                        
+                        # Section summary
+                        st.markdown(f"{indent}{summary}")
+                        
+                        # TTS controls for section
+                        col1, col2, col3 = st.columns([1, 1, 4])
+                        
+                        with col1:
+                            if st.button("🔊 Read", key=f"tts_section_{doc['id']}_{i}", 
+                                       help="Read this section with browser TTS"):
+                                text_to_speech(f"Section: {section_path}. {summary}")
+                        
+                        with col2:
+                            if st.button("⏹️ Stop", key=f"stop_section_{doc['id']}_{i}",
+                                       help="Stop reading"):
+                                stop_speech_html = """
+                                <script>window.speechSynthesis.cancel();</script>
+                                """
+                                html(stop_speech_html, height=0)
+                        
+                        st.markdown("---")
+                
+                # Add button to read all sections
+                if st.button(f"📖 Read All Sections", key=f"read_all_sections_{doc['id']}",
+                           help="Read all sections sequentially"):
+                    # Combine all sections into one text
+                    all_sections_text = ""
+                    for section_path, summary in section_summaries.items():
+                        all_sections_text += f"Section: {section_path}. {summary}. "
+                    text_to_speech(all_sections_text)
+                
+                # OpenAI TTS for all sections
+                if section_summaries:
+                    st.markdown("**🎤 Generate Audio File (OpenAI TTS)**")
+                    # Combine all sections for OpenAI TTS
+                    combined_text = "\n\n".join([f"{path}: {summary}" for path, summary in section_summaries.items()])
+                    render_simple_tts_section(combined_text, f"all_sections_{doc['id']}")
+        else:
+            with st.expander(f"📑 Sections: {doc['display_name']}", expanded=False):
+                st.info("No section summaries available for this document.")
+    
     # AI-Generated Document Overview Section
     st.markdown("---")
     st.subheader("🤖 AI-Generated Document Overview")
@@ -1359,6 +1422,330 @@ def render_document_summary_tab(selected_doc_ids):
                 if 'full_content' in report and pd.notna(report['full_content']):
                     with st.expander("View Full Report", expanded=False):
                         st.markdown(report['full_content'])
+    
+    # Audio Lecture Section
+    st.markdown("---")
+    st.subheader("🎙️ Audio Lecture Generator")
+    st.caption("Generate comprehensive audio lectures from document content")
+    
+    # Check if documents are selected
+    if not selected_docs:
+        st.info("📄 Please select documents from the sidebar to generate audio lectures.")
+        return
+    
+    # Import audio lecture generator
+    try:
+        from audio_lecture_generator import AudioLectureGenerator, LectureDetailLevel
+        from openai_tts_simple import generate_tts_audio
+        
+        generator = AudioLectureGenerator()
+        
+        # Lecture controls
+        col1, col2, col3 = st.columns([2, 2, 1])
+        
+        with col1:
+            # Detail level slider
+            detail_level = st.select_slider(
+                "📏 Lecture Detail Level",
+                options=[
+                    LectureDetailLevel.OVERVIEW,
+                    LectureDetailLevel.MAIN_POINTS,
+                    LectureDetailLevel.STANDARD,
+                    LectureDetailLevel.DETAILED,
+                    LectureDetailLevel.COMPREHENSIVE
+                ],
+                value=LectureDetailLevel.STANDARD,
+                format_func=lambda x: {
+                    LectureDetailLevel.OVERVIEW: "Overview (Highest level only)",
+                    LectureDetailLevel.MAIN_POINTS: "Main Points (Key sections)",
+                    LectureDetailLevel.STANDARD: "Standard (All sections)",
+                    LectureDetailLevel.DETAILED: "Detailed (+ Entities & Relations)",
+                    LectureDetailLevel.COMPREHENSIVE: "Comprehensive (Everything)"
+                }[x],
+                help="Control how much detail to include in the lecture"
+            )
+        
+        with col2:
+            # Voice selection for lecture
+            voice_options = {
+                "alloy": "Alloy (Neutral)",
+                "echo": "Echo (Clear)",
+                "fable": "Fable (Warm)",
+                "onyx": "Onyx (Deep)",
+                "nova": "Nova (Bright)",
+                "shimmer": "Shimmer (Soft)"
+            }
+            lecture_voice = st.selectbox(
+                "🎤 Lecture Voice",
+                options=list(voice_options.keys()),
+                format_func=lambda x: voice_options[x],
+                index=4,  # Default to nova
+                help="Choose the voice for your audio lecture"
+            )
+        
+        with col3:
+            # Quality selection
+            lecture_quality = st.selectbox(
+                "🎧 Audio Quality",
+                options=["tts-1", "tts-1-hd"],
+                format_func=lambda x: "Standard" if x == "tts-1" else "HD (High Quality)",
+                help="Higher quality takes longer but sounds better"
+            )
+        
+        # Additional options
+        with st.expander("🔧 Advanced Options", expanded=False):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                include_entities = st.checkbox(
+                    "Include key entities",
+                    value=detail_level.value >= 3,
+                    help="Include important concepts and entities in the lecture"
+                )
+                include_relationships = st.checkbox(
+                    "Include relationships",
+                    value=detail_level.value >= 4,
+                    help="Include connections between concepts"
+                )
+            
+            with col2:
+                include_bullet_points = st.checkbox(
+                    "Include key takeaways",
+                    value=True,
+                    help="Include bullet point summaries as key takeaways"
+                )
+                add_intro_music = st.checkbox(
+                    "Add intro/outro (coming soon)",
+                    value=False,
+                    disabled=True,
+                    help="Add professional intro and outro music"
+                )
+        
+        # Show previously generated lectures
+        if selected_docs:
+            doc_id = selected_docs[0]['id']
+            previous_lectures = generator.load_lecture_scripts(doc_id)
+            
+            if previous_lectures:
+                with st.expander(f"📚 Previously Generated Lectures ({len(previous_lectures)})", expanded=False):
+                    for lecture in previous_lectures[:5]:  # Show latest 5
+                        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                        
+                        with col1:
+                            gen_time = lecture.get('generated_at', 'Unknown')
+                            if gen_time != 'Unknown':
+                                try:
+                                    gen_dt = datetime.fromisoformat(gen_time)
+                                    gen_time = gen_dt.strftime("%Y-%m-%d %H:%M")
+                                except:
+                                    pass
+                            st.markdown(f"**Generated:** {gen_time}")
+                        
+                        with col2:
+                            st.markdown(f"**Detail:** {lecture.get('detail_level', 'Unknown')}")
+                        
+                        with col3:
+                            duration = lecture.get('duration_estimate', 0)
+                            st.markdown(f"**Duration:** {duration} min")
+                        
+                        with col4:
+                            # Download previous script button
+                            if st.button("📄", key=f"download_script_{lecture.get('filename', '')}",
+                                       help="Download script"):
+                                script_text = lecture.get('full_script', '')
+                                if script_text:
+                                    st.download_button(
+                                        label="💾",
+                                        data=script_text,
+                                        file_name=f"lecture_script_{lecture.get('detail_level', 'unknown')}.txt",
+                                        mime="text/plain",
+                                        key=f"dl_{lecture.get('filename', '')}"
+                                    )
+        
+        # Generate lecture button
+        if st.button("🎬 Generate Audio Lecture", type="primary", use_container_width=True):
+            with st.spinner("🎙️ Preparing your audio lecture..."):
+                # Gather all document data
+                all_section_summaries = {}
+                document_summary = None
+                additional_context = {
+                    'entities': [],
+                    'relationships': [],
+                    'bullet_points': [],
+                    'community_reports': []
+                }
+                
+                # Process each selected document
+                for doc in selected_docs:
+                    doc_details = get_document_by_id(doc['id'])
+                    
+                    if doc_details:
+                        # Get document summary
+                        if not document_summary and doc_details.get('summary'):
+                            document_summary = {
+                                'display_name': doc_details['display_name'],
+                                'summary': doc_details['summary']
+                            }
+                        
+                        # Get section summaries
+                        if doc_details.get('section_summaries'):
+                            all_section_summaries.update(doc_details['section_summaries'])
+                        
+                        # Get entities and relationships if needed
+                        if include_entities or include_relationships:
+                            entities, relationships = load_multi_document_data([doc['id']])
+                            
+                            if include_entities and not entities.empty:
+                                # Get top entities
+                                top_entities = entities.nlargest(20, 'degree', keep='all') if 'degree' in entities.columns else entities.head(20)
+                                for _, entity in top_entities.iterrows():
+                                    additional_context['entities'].append({
+                                        'title': entity.get('title', ''),
+                                        'type': entity.get('type', ''),
+                                        'description': entity.get('description', '')[:200] if 'description' in entity else ''
+                                    })
+                            
+                            if include_relationships and not relationships.empty:
+                                # Get top relationships
+                                for _, rel in relationships.head(15).iterrows():
+                                    additional_context['relationships'].append({
+                                        'source': rel.get('source', ''),
+                                        'target': rel.get('target', ''),
+                                        'description': rel.get('description', '')[:100] if 'description' in rel else ''
+                                    })
+                        
+                        # Get community reports
+                        try:
+                            reports_df_local = load_community_reports([doc['id']])
+                            if not reports_df_local.empty:
+                                for _, report in reports_df_local.head(5).iterrows():
+                                    if 'summary' in report and pd.notna(report['summary']):
+                                        additional_context['community_reports'].append(report['summary'])
+                        except Exception as e:
+                            logger.warning(f"Could not load community reports for lecture: {e}")
+                
+                if not document_summary:
+                    st.error("❌ No document summary available for lecture generation")
+                    st.stop()
+                
+                if not all_section_summaries:
+                    st.warning("⚠️ No section summaries available. Generating basic lecture from document summary only.")
+                
+                # Generate lecture script
+                st.info("📝 Generating lecture script...")
+                lecture_sections, full_script = generator.generate_lecture_script(
+                    document_summary=document_summary,
+                    section_summaries=all_section_summaries,
+                    detail_level=detail_level,
+                    include_entities=include_entities,
+                    include_relationships=include_relationships,
+                    include_bullet_points=include_bullet_points,
+                    additional_context=additional_context
+                )
+                
+                # Save the lecture script
+                doc_id = selected_docs[0]['id'] if selected_docs else None
+                if doc_id:
+                    save_metadata = {
+                        'voice': lecture_voice,
+                        'quality': lecture_quality,
+                        'include_entities': include_entities,
+                        'include_relationships': include_relationships,
+                        'include_bullet_points': include_bullet_points,
+                        'document_name': document_summary['display_name']
+                    }
+                    
+                    saved = generator.save_lecture_script(
+                        document_id=doc_id,
+                        lecture_sections=lecture_sections,
+                        full_script=full_script,
+                        detail_level=detail_level,
+                        metadata=save_metadata
+                    )
+                    
+                    if saved:
+                        st.success("💾 Lecture script saved to document workspace")
+                    else:
+                        st.warning("⚠️ Could not save lecture script to workspace")
+                
+                # Show lecture preview
+                duration_estimate = generator.estimate_lecture_duration(full_script)
+                st.success(f"✅ Lecture script generated! Estimated duration: {duration_estimate} minutes")
+                
+                # Display lecture outline
+                with st.expander("📋 Lecture Outline", expanded=True):
+                    for section in lecture_sections:
+                        if section.section_type == "introduction":
+                            st.markdown(f"**🎬 {section.title}**")
+                        elif section.section_type == "conclusion":
+                            st.markdown(f"**🎭 {section.title}**")
+                        elif section.section_type == "transition":
+                            st.markdown(f"*➡️ {section.title}*")
+                        else:
+                            indent = "  " * (section.level - 1)
+                            st.markdown(f"{indent}**📍 {section.title}**")
+                
+                # Show full script preview
+                with st.expander("📜 Full Lecture Script", expanded=False):
+                    st.text_area(
+                        "Lecture script:",
+                        value=full_script,
+                        height=300,
+                        disabled=True
+                    )
+                
+                # Generate audio
+                st.info("🎵 Generating audio file...")
+                audio_bytes, error = generate_tts_audio(
+                    full_script,
+                    voice=lecture_voice,
+                    model=lecture_quality
+                )
+                
+                if audio_bytes:
+                    st.success("✅ Audio lecture generated successfully!")
+                    
+                    # Play audio
+                    st.audio(audio_bytes, format="audio/mp3")
+                    
+                    # Download buttons
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Download audio button
+                        from datetime import datetime
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        audio_filename = f"lecture_{document_summary['display_name'].replace(' ', '_')}_{timestamp}.mp3"
+                        
+                        st.download_button(
+                            label="📥 Download Audio (MP3)",
+                            data=audio_bytes,
+                            file_name=audio_filename,
+                            mime="audio/mpeg",
+                            use_container_width=True
+                        )
+                    
+                    with col2:
+                        # Download script button
+                        script_filename = f"lecture_script_{document_summary['display_name'].replace(' ', '_')}_{timestamp}.txt"
+                        
+                        st.download_button(
+                            label="📄 Download Script (TXT)",
+                            data=full_script,
+                            file_name=script_filename,
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+                else:
+                    st.error(f"❌ Failed to generate audio: {error}")
+                    st.info("💡 Make sure your OpenAI API key is configured in the .env file")
+        
+    except ImportError as e:
+        st.error(f"❌ Audio lecture feature not available: {e}")
+        st.info("Please make sure all required dependencies are installed.")
+    except Exception as e:
+        st.error(f"❌ Error in audio lecture generation: {e}")
+        logger.error(f"Audio lecture error: {e}")
 
 def render_graph_tab(selected_doc_ids):
     """Render the Graph Explorer tab with embedded controls."""
@@ -1867,6 +2254,10 @@ def render_chat_tab(selected_doc_ids):
                         else:
                             result = local_search(selected_doc_ids, query, model=model)
                         
+                        # Search for relevant sections
+                        from query_logic import search_relevant_sections
+                        relevant_sections = search_relevant_sections(query, selected_doc_ids, limit=3)
+                        
                         # Add to chat history
                         chat_entry = {
                             "query": query,
@@ -1878,7 +2269,8 @@ def render_chat_tab(selected_doc_ids):
                             "error": result.error_message,
                             "timestamp": pd.Timestamp.now().strftime("%H:%M:%S"),
                             "raw_response": result.raw_response,
-                            "context_info": result.context_info
+                            "context_info": result.context_info,
+                            "relevant_sections": relevant_sections
                         }
                         st.session_state.chat_history.append(chat_entry)
                         
@@ -1889,6 +2281,21 @@ def render_chat_tab(selected_doc_ids):
                             # Display the response
                             st.markdown("### 💬 Response")
                             st.markdown(result.response)
+                            
+                            # Display relevant sections if found
+                            if relevant_sections:
+                                st.markdown("### 📑 Relevant Document Sections")
+                                for section in relevant_sections:
+                                    with st.expander(f"📑 {section['section_path']} (Score: {section['relevance_score']:.2f})", expanded=False):
+                                        st.markdown(f"**From:** {section['document_name']}")
+                                        st.markdown(section['summary'])
+                                        
+                                        # TTS controls for section
+                                        col1, col2 = st.columns([1, 5])
+                                        with col1:
+                                            if st.button("🔊 Read", key=f"tts_relevant_{hash(section['section_path'])}", 
+                                                       help="Read this section"):
+                                                text_to_speech(f"Section: {section['section_path']}. {section['summary']}")
                             
                             # OpenAI TTS Section (now outside the form)
                             render_simple_tts_section(result.response, "immediate")
@@ -1936,6 +2343,12 @@ def render_chat_tab(selected_doc_ids):
                             st.markdown("**Sources:**")
                             for doc in entry['source_documents']:
                                 st.markdown(f"• {doc}")
+                        
+                        # Show relevant sections from history
+                        if entry.get('relevant_sections'):
+                            st.markdown("**📑 Relevant Sections:**")
+                            for section in entry['relevant_sections']:
+                                st.markdown(f"• **{section['section_path']}** - {section['summary'][:100]}...")
                         
                         # Show context information for debugging
                         if entry.get('context_info'):
