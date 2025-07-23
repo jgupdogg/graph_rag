@@ -8,6 +8,7 @@ import subprocess
 import pandas as pd
 import shutil
 import uuid
+import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
@@ -16,6 +17,42 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import summarization functionality
+try:
+    from summarizer import generate_document_summary, DocumentSummarizer
+    SUMMARIZER_AVAILABLE = True
+    logger.info("Summarization module loaded successfully")
+except ImportError as e:
+    SUMMARIZER_AVAILABLE = False
+    logger.warning(f"Summarization module not available: {e}")
+
+# Import summary vector store functionality
+try:
+    from summary_vectors import SummaryVectorStore
+    VECTOR_STORE_AVAILABLE = True
+    logger.info("Summary vector store module loaded successfully")
+except ImportError as e:
+    VECTOR_STORE_AVAILABLE = False
+    logger.warning(f"Summary vector store not available: {e}")
+
+# Import raw text embeddings functionality
+try:
+    from raw_text_embeddings import RawTextEmbeddingStore
+    RAW_EMBEDDINGS_AVAILABLE = True
+    logger.info("Raw text embeddings module loaded successfully")
+except ImportError as e:
+    RAW_EMBEDDINGS_AVAILABLE = False
+    logger.warning(f"Raw text embeddings not available: {e}")
+
+# Import enhanced RAG functionality
+try:
+    from enhanced_rag_integration import EnhancedRAGIntegration
+    ENHANCED_RAG_AVAILABLE = True
+    logger.info("Enhanced RAG module loaded successfully")
+except ImportError as e:
+    ENHANCED_RAG_AVAILABLE = False
+    logger.warning(f"Enhanced RAG module not available: {e}")
 
 # Configuration constants
 DB_PATH = Path("metadata.db")
@@ -86,9 +123,18 @@ class GraphRAGProcessor:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     file_size INTEGER,
                     processing_time INTEGER,
-                    error_message TEXT
+                    error_message TEXT,
+                    summary TEXT,
+                    metadata TEXT
                 )
             """)
+            
+            # Add metadata column if it doesn't exist (for existing databases)
+            cursor.execute("PRAGMA table_info(documents)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'metadata' not in columns:
+                cursor.execute("ALTER TABLE documents ADD COLUMN metadata TEXT")
+                logger.info("Added metadata column to documents table")
             
             # Create processing logs table with CASCADE delete
             cursor.execute("""
@@ -102,6 +148,18 @@ class GraphRAGProcessor:
                     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
                 )
             """)
+            
+            # Add the 'summary' column to existing databases if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN summary TEXT")
+                logger.info("Added 'summary' column to existing 'documents' table.")
+            except sqlite3.OperationalError as e:
+                # Column likely already exists, which is fine
+                if "duplicate column name" in str(e).lower():
+                    logger.debug("Summary column already exists in documents table")
+                else:
+                    logger.warning(f"Unexpected error adding summary column: {e}")
+            
         logger.info("Database initialized successfully")
     
     def get_all_documents(self, status: Optional[str] = None) -> List[Dict]:
@@ -110,7 +168,7 @@ class GraphRAGProcessor:
             with self.db_manager as cursor:
                 query = """
                     SELECT id, display_name, original_filename, status, workspace_path, created_at, 
-                           updated_at, file_size, processing_time, error_message
+                           updated_at, file_size, processing_time, error_message, summary
                     FROM documents
                 """
                 params = ()
@@ -128,6 +186,22 @@ class GraphRAGProcessor:
     def get_processed_documents(self) -> List[Dict]:
         """Fetch all successfully processed documents from the database."""
         return self.get_all_documents(status=DocumentStatus.COMPLETED)
+    
+    def get_document_by_id(self, doc_id: str) -> Optional[Dict]:
+        """Fetch a single document by ID with all details including summary."""
+        try:
+            with self.db_manager as cursor:
+                cursor.execute("""
+                    SELECT id, display_name, original_filename, status, workspace_path, created_at, 
+                           updated_at, file_size, processing_time, error_message, summary
+                    FROM documents
+                    WHERE id = ?
+                """, (doc_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except sqlite3.Error as e:
+            logger.error(f"Error getting document by ID: {e}")
+            return None
     
     def get_document_status(self, doc_id: str) -> Optional[str]:
         """Get the current status of a document."""
@@ -355,8 +429,136 @@ class GraphRAGProcessor:
             self.log_processing_step(doc_id, "VALIDATE", "Validating workspace structure")
             self._validate_workspace(workspace_path)
         
+        # Apply Enhanced RAG processing if available
+        if ENHANCED_RAG_AVAILABLE:
+            self.log_processing_step(doc_id, "ENHANCED_RAG", "Starting enhanced document processing")
+            try:
+                # Get document display name
+                with self.db_manager as cursor:
+                    cursor.execute("SELECT display_name FROM documents WHERE id = ?", (doc_id,))
+                    result = cursor.fetchone()
+                    display_name = result[0] if result else doc_id
+                
+                # Get API key from config
+                from config_manager import config_manager
+                api_key = config_manager.get_api_key()
+                
+                if api_key:
+                    # Initialize enhanced RAG processor
+                    enhanced_rag = EnhancedRAGIntegration(api_key)
+                    
+                    # Process document with enhanced features
+                    enhanced_result = enhanced_rag.process_document_enhanced(
+                        workspace_path=workspace_path,
+                        doc_id=doc_id,
+                        display_name=display_name,
+                        use_bullet_points=True
+                    )
+                    
+                    # Update GraphRAG config for enhanced processing
+                    enhanced_rag.update_graphrag_config_for_enhanced_rag(workspace_path)
+                    
+                    self.log_processing_step(
+                        doc_id, 
+                        "ENHANCED_RAG", 
+                        f"Enhanced processing completed - Document type: {enhanced_result['metadata']['classification']['type']}"
+                    )
+                    
+                    # Store enhanced metadata in database
+                    with self.db_manager as cursor:
+                        cursor.execute("""
+                            UPDATE documents 
+                            SET metadata = ? 
+                            WHERE id = ?
+                        """, (json.dumps(enhanced_result['metadata']), doc_id))
+                    
+                else:
+                    self.log_processing_step(doc_id, "ENHANCED_RAG", "API key not available - skipping enhanced processing", "WARNING")
+                    
+            except Exception as e:
+                self.log_processing_step(doc_id, "ENHANCED_RAG", f"Enhanced processing failed: {e}", "ERROR")
+                logger.warning(f"Enhanced RAG processing failed for {doc_id}: {e}")
+                # Continue with standard processing
+        
         # Run GraphRAG indexing
         self._run_graphrag_indexing(doc_id, workspace_path)
+        
+        # Generate raw text embeddings for precise retrieval
+        if RAW_EMBEDDINGS_AVAILABLE:
+            self.log_processing_step(doc_id, "EMBED_RAW", "Generating raw text embeddings")
+            try:
+                from config_manager import config_manager
+                api_key = config_manager.get_api_key()
+                
+                if api_key:
+                    raw_embeddings_store = RawTextEmbeddingStore(workspace_path, api_key)
+                    success = raw_embeddings_store.process_and_store_raw_chunks(doc_id)
+                    
+                    if success:
+                        table_info = raw_embeddings_store.get_table_info()
+                        self.log_processing_step(
+                            doc_id, 
+                            "EMBED_RAW", 
+                            f"Successfully generated {table_info['count']} raw text embeddings"
+                        )
+                    else:
+                        self.log_processing_step(doc_id, "EMBED_RAW", "Failed to generate raw text embeddings", "ERROR")
+                else:
+                    self.log_processing_step(doc_id, "EMBED_RAW", "API key not available - skipping raw embeddings", "WARNING")
+                    
+            except Exception as e:
+                self.log_processing_step(doc_id, "EMBED_RAW", f"Raw embedding generation failed: {e}", "ERROR")
+                logger.warning(f"Raw text embedding generation failed for {doc_id}: {e}")
+        
+        # Generate document summary and embeddings
+        if SUMMARIZER_AVAILABLE:
+            self.log_processing_step(doc_id, "SUMMARIZE", "Generating structured summary and embeddings")
+            try:
+                # Get document display name for better context
+                with self.db_manager as cursor:
+                    cursor.execute("SELECT display_name FROM documents WHERE id = ?", (doc_id,))
+                    result = cursor.fetchone()
+                    display_name = result[0] if result else doc_id
+                
+                # Use enhanced summarizer with embeddings if available
+                if VECTOR_STORE_AVAILABLE:
+                    try:
+                        summarizer = DocumentSummarizer()
+                        final_summary, chunk_summaries = summarizer.generate_document_summary_with_embeddings(workspace_path, display_name)
+                        
+                        # Store summary embeddings in vector database
+                        if chunk_summaries:
+                            self.log_processing_step(doc_id, "EMBED_SUMMARIES", f"Storing {len(chunk_summaries)} summary embeddings")
+                            vector_store = SummaryVectorStore(workspace_path)
+                            success = vector_store.store_chunk_summaries(chunk_summaries, doc_id)
+                            
+                            if success:
+                                self.log_processing_step(doc_id, "EMBED_SUMMARIES", f"Successfully stored {len(chunk_summaries)} summary embeddings")
+                            else:
+                                self.log_processing_step(doc_id, "EMBED_SUMMARIES", "Failed to store summary embeddings", "ERROR")
+                    
+                    except Exception as embed_error:
+                        logger.warning(f"Enhanced summarization failed for {doc_id}, falling back to basic summary: {embed_error}")
+                        final_summary = generate_document_summary(workspace_path, display_name)
+                        self.log_processing_step(doc_id, "SUMMARIZE", "Used fallback summarization (no embeddings)", "WARNING")
+                else:
+                    # Fallback to basic summarization
+                    final_summary = generate_document_summary(workspace_path, display_name)
+                    self.log_processing_step(doc_id, "SUMMARIZE", "Vector store not available - using basic summarization", "WARNING")
+                
+                # Store summary in database
+                with self.db_manager as cursor:
+                    cursor.execute("UPDATE documents SET summary = ? WHERE id = ?", (final_summary, doc_id))
+                
+                self.log_processing_step(doc_id, "SUMMARIZE", f"Successfully generated and stored summary ({len(final_summary)} characters)")
+                
+            except Exception as e:
+                error_msg = f"Failed to generate summary: {e}"
+                self.log_processing_step(doc_id, "SUMMARIZE", error_msg, "ERROR")
+                logger.warning(f"Summarization failed for document {doc_id}: {e}")
+                # Continue processing - summarization failure shouldn't fail the whole process
+        else:
+            self.log_processing_step(doc_id, "SUMMARIZE", "Summarization module not available - skipping", "WARNING")
         
         # Update processing time and status
         processing_time = (datetime.now() - start_time).total_seconds()
@@ -616,4 +818,8 @@ def get_processing_logs(doc_id: str):
 def get_all_documents():
     """Get all documents."""
     return processor.get_all_documents()
+
+def get_document_by_id(doc_id: str):
+    """Get a single document by ID with all details including summary."""
+    return processor.get_document_by_id(doc_id)
 

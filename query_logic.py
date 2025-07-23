@@ -14,10 +14,31 @@ import logging
 from dataclasses import dataclass
 import sqlite3
 from datetime import datetime
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import summary vector store functionality
+try:
+    from summary_vectors import MultiDocumentSummaryVectorStore
+    from summarizer import DocumentSummarizer
+    import openai
+    SUMMARY_SEARCH_AVAILABLE = True
+    logger.info("Summary-based search capabilities loaded")
+except ImportError as e:
+    SUMMARY_SEARCH_AVAILABLE = False
+    logger.warning(f"Summary search not available: {e}")
+
+# Import enhanced query handler
+try:
+    from enhanced_query_handler import EnhancedQueryHandler
+    ENHANCED_SEARCH_AVAILABLE = True
+    logger.info("Enhanced search capabilities loaded")
+except ImportError as e:
+    ENHANCED_SEARCH_AVAILABLE = False
+    logger.warning(f"Enhanced search not available: {e}")
 
 @dataclass
 class QueryResult:
@@ -39,6 +60,12 @@ class GraphRAGQueryEngine:
         self.db_path = Path(db_path)
         self.workspaces_dir = Path("workspaces")
         self.venv_path = Path(__file__).parent / "venv"
+        
+        # Initialize summary vector store manager
+        if SUMMARY_SEARCH_AVAILABLE:
+            self.summary_store_manager = MultiDocumentSummaryVectorStore(self.workspaces_dir)
+        else:
+            self.summary_store_manager = None
         
     def _extract_context_info(self, raw_response: str) -> Dict[str, Any]:
         """Extract context information from GraphRAG output for debugging."""
@@ -457,9 +484,261 @@ class GraphRAGQueryEngine:
         """Perform a basic search across selected documents."""
         return self.query_documents(doc_ids, query, method="basic", model=model)
     
+    def summary_search(self, doc_ids: List[str], query: str, limit: int = 10, model: str = "o4-mini") -> QueryResult:
+        """Perform similarity search using document summary embeddings."""
+        if not SUMMARY_SEARCH_AVAILABLE:
+            return QueryResult(
+                query=query,
+                response="Summary search not available. Missing dependencies: lancedb, pyarrow, or openai.",
+                search_type="summary",
+                source_documents=[],
+                success=False,
+                error_message="Summary search dependencies not available"
+            )
+        
+        try:
+            # Get document workspaces
+            workspaces = self._get_document_workspaces(doc_ids)
+            if not workspaces:
+                return QueryResult(
+                    query=query,
+                    response="No valid workspaces found for the selected documents.",
+                    search_type="summary",
+                    source_documents=[],
+                    success=False,
+                    error_message="No valid workspaces found"
+                )
+            
+            # Generate query embedding
+            try:
+                summarizer = DocumentSummarizer()
+                query_vector = summarizer._get_embedding(query)
+                logger.info(f"Generated query embedding for: '{query[:50]}...'")
+            except Exception as e:
+                return QueryResult(
+                    query=query,
+                    response=f"Failed to generate query embedding: {e}",
+                    search_type="summary",
+                    source_documents=[],
+                    success=False,
+                    error_message=f"Query embedding error: {e}"
+                )
+            
+            # Search across all documents using summary vectors
+            workspace_paths = [workspace_path for _, workspace_path, _ in workspaces]
+            search_results = self.summary_store_manager.search_across_documents(
+                query_vector, doc_ids, workspace_paths, limit
+            )
+            
+            if not search_results:
+                return QueryResult(
+                    query=query,
+                    response="No similar content found in document summaries. This could mean:\n" +
+                            "1. Documents haven't been processed with summary embeddings yet\n" +
+                            "2. No content matches your query semantically\n" +
+                            "3. Try rephrasing your query or use a different search method",
+                    search_type="summary",
+                    source_documents=[doc[2] for doc in workspaces],
+                    success=True,
+                    metadata={"results_count": 0, "search_method": "summary_embeddings"}
+                )
+            
+            # Build response from search results
+            response_parts = []
+            response_parts.append(f"Found {len(search_results)} relevant content sections based on semantic similarity:\n")
+            
+            source_documents = set()
+            
+            for i, result in enumerate(search_results[:limit], 1):
+                # Get document name from workspace info
+                doc_name = "Unknown Document"
+                for doc_id_ws, workspace_path, display_name in workspaces:
+                    if result["document_id"] == doc_id_ws:
+                        doc_name = display_name
+                        source_documents.add(display_name)
+                        break
+                
+                similarity_score = 1.0 - result.get("score", 1.0)  # Convert distance to similarity
+                
+                response_parts.append(f"\n**Result {i}** (Similarity: {similarity_score:.3f}) - *{doc_name}*")
+                response_parts.append(f"**Summary:** {result['summary_text']}")
+                
+                # Optionally include snippet of raw text for context
+                raw_text_snippet = result['raw_text'][:200] + "..." if len(result['raw_text']) > 200 else result['raw_text']
+                response_parts.append(f"**Context:** {raw_text_snippet}")
+                response_parts.append("---")
+            
+            # Add analysis summary
+            response_parts.append(f"\n**Search Summary:**")
+            response_parts.append(f"- Query: '{query}'")
+            response_parts.append(f"- Documents searched: {len(workspaces)}")
+            response_parts.append(f"- Relevant sections found: {len(search_results)}")
+            response_parts.append(f"- Search method: Semantic similarity using AI-generated summaries")
+            
+            return QueryResult(
+                query=query,
+                response="\n".join(response_parts),
+                search_type="summary",
+                source_documents=list(source_documents),
+                success=True,
+                metadata={
+                    "results_count": len(search_results),
+                    "search_method": "summary_embeddings",
+                    "documents_searched": len(workspaces),
+                    "similarity_scores": [1.0 - r.get("score", 1.0) for r in search_results]
+                },
+                context_info={
+                    "search_results": search_results,
+                    "query_embedding_dimension": len(query_vector)
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Summary search failed: {e}")
+            return QueryResult(
+                query=query,
+                response=f"Summary search encountered an error: {e}",
+                search_type="summary",
+                source_documents=[],
+                success=False,
+                error_message=str(e)
+            )
+    
+    def enhanced_search(self, doc_ids: List[str], query: str, use_o1_model: bool = False, limit: int = 5) -> QueryResult:
+        """Perform enhanced two-stage search using raw text embeddings and graph knowledge."""
+        if not ENHANCED_SEARCH_AVAILABLE:
+            return QueryResult(
+                query=query,
+                response="Enhanced search not available. Missing dependencies.",
+                search_type="enhanced",
+                source_documents=[],
+                success=False,
+                error_message="Enhanced search dependencies not available"
+            )
+        
+        if len(doc_ids) != 1:
+            return QueryResult(
+                query=query,
+                response="Enhanced search currently supports single document queries only.",
+                search_type="enhanced",
+                source_documents=[],
+                success=False,
+                error_message="Multiple document selection not supported"
+            )
+        
+        try:
+            # Get document workspace
+            workspaces = self._get_document_workspaces(doc_ids)
+            if not workspaces:
+                return QueryResult(
+                    query=query,
+                    response="No valid workspace found for the selected document.",
+                    search_type="enhanced",
+                    source_documents=[],
+                    success=False,
+                    error_message="No valid workspace found"
+                )
+            
+            doc_id, workspace_path, display_name = workspaces[0]
+            
+            # Get API key
+            from config_manager import config_manager
+            api_key = config_manager.get_api_key()
+            if not api_key:
+                return QueryResult(
+                    query=query,
+                    response="API key not configured.",
+                    search_type="enhanced",
+                    source_documents=[],
+                    success=False,
+                    error_message="API key not available"
+                )
+            
+            # Initialize enhanced query handler
+            handler = EnhancedQueryHandler(workspace_path, api_key)
+            
+            # Perform enhanced query
+            logger.info(f"Performing enhanced search: '{query[:50]}...'")
+            results = handler.query(
+                query_text=query,
+                document_id=doc_id,
+                initial_limit=10,
+                final_limit=limit,
+                use_graph_expansion=True
+            )
+            
+            if not results:
+                return QueryResult(
+                    query=query,
+                    response="No relevant content found using enhanced search.",
+                    search_type="enhanced",
+                    source_documents=[display_name],
+                    success=True,
+                    metadata={"results_count": 0}
+                )
+            
+            # Generate answer using retrieved context
+            answer = handler.generate_answer(query, results, use_o1_model=use_o1_model)
+            
+            # Build detailed response
+            response_parts = [answer, "\n\n---\n\n**Retrieved Context:**\n"]
+            
+            for i, result in enumerate(results, 1):
+                response_parts.append(f"\n**[{i}] Chunk {result.chunk_id}** (Relevance: {result.relevance_score:.3f})")
+                
+                # Add snippet of text
+                text_snippet = result.text[:300] + "..." if len(result.text) > 300 else result.text
+                response_parts.append(f"Text: {text_snippet}")
+                
+                # Add entity information if available
+                if result.entities:
+                    entity_names = [f"{e['name']} ({e['type']})" for e in result.entities[:5]]
+                    response_parts.append(f"Entities: {', '.join(entity_names)}")
+                
+                # Add relationship count if available
+                if result.relationships:
+                    response_parts.append(f"Relationships: {len(result.relationships)} found")
+                
+                response_parts.append("")
+            
+            return QueryResult(
+                query=query,
+                response="\n".join(response_parts),
+                search_type="enhanced",
+                source_documents=[display_name],
+                success=True,
+                metadata={
+                    "results_count": len(results),
+                    "search_method": "raw_text_embeddings_with_graph",
+                    "model_used": "o1-preview" if use_o1_model else "gpt-4o-mini",
+                    "graph_entities_found": sum(len(r.entities or []) for r in results),
+                    "graph_relationships_found": sum(len(r.relationships or []) for r in results)
+                },
+                context_info={
+                    "chunks_retrieved": [r.chunk_id for r in results],
+                    "relevance_scores": [r.relevance_score for r in results]
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Enhanced search failed: {e}")
+            return QueryResult(
+                query=query,
+                response=f"Enhanced search encountered an error: {e}",
+                search_type="enhanced",
+                source_documents=[],
+                success=False,
+                error_message=str(e)
+            )
+    
     def get_supported_methods(self) -> List[str]:
         """Get list of supported query methods."""
-        return ["local", "global", "drift", "basic"]
+        methods = ["local", "global", "drift", "basic"]
+        if SUMMARY_SEARCH_AVAILABLE:
+            methods.append("summary")
+        if ENHANCED_SEARCH_AVAILABLE:
+            methods.append("enhanced")
+        return methods
     
     def inspect_document_knowledge_base(self, doc_id: str) -> Dict[str, Any]:
         """Inspect what's actually in a document's GraphRAG knowledge base."""
@@ -611,6 +890,15 @@ def drift_search(doc_ids: List[str], query: str, model: str = "o4-mini") -> Quer
 def basic_search(doc_ids: List[str], query: str, model: str = "o4-mini") -> QueryResult:
     """Perform a basic search across selected documents."""
     return query_engine.basic_search(doc_ids, query, model)
+
+def enhanced_search(doc_ids: List[str], query: str, use_o1_model: bool = False, limit: int = 5) -> QueryResult:
+    """Convenience function for enhanced search."""
+    engine = GraphRAGQueryEngine()
+    return engine.enhanced_search(doc_ids, query, use_o1_model=use_o1_model, limit=limit)
+
+def summary_search(doc_ids: List[str], query: str, limit: int = 10, model: str = "o4-mini") -> QueryResult:
+    """Perform similarity search using document summary embeddings."""
+    return query_engine.summary_search(doc_ids, query, limit, model)
 
 def get_supported_methods() -> List[str]:
     """Get list of supported query methods."""

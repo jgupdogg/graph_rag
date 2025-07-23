@@ -28,6 +28,7 @@ from app_logic import (
     processor,
     get_processed_documents,
     get_all_documents,
+    get_document_by_id,
     process_new_document,
     load_and_merge_graphs,
     delete_document,
@@ -42,6 +43,8 @@ from query_logic import (
     local_search,
     drift_search,
     basic_search,
+    summary_search,
+    enhanced_search,
     get_supported_methods,
     validate_query,
     add_to_chat_history,
@@ -1134,7 +1137,78 @@ def render_document_summary_tab(selected_doc_ids):
                 """
                 html(test_settings_html, height=0)
     
+    # Two-Stage Document Summaries Section
+    st.markdown("---")
+    st.subheader("📄 Document Summaries")
+    st.caption("Comprehensive summaries generated from document content analysis")
+    
+    # Display summaries for each selected document
+    for doc in selected_docs:
+        doc_details = get_document_by_id(doc['id'])
+        if doc_details:
+            with st.expander(f"📄 {doc_details['display_name']}", expanded=len(selected_docs) == 1):
+                if doc_details.get('summary'):
+                    # Display the summary with markdown formatting
+                    st.markdown(doc_details['summary'])
+                    
+                    # TTS controls for individual document summary
+                    col_tts1, col_tts2, col_tts3 = st.columns([1, 1, 2])
+                    
+                    with col_tts1:
+                        if st.button(f"🔊 Read Aloud", key=f"tts_{doc['id']}", help="Read summary with browser TTS"):
+                            text_to_speech(doc_details['summary'])
+                    
+                    with col_tts2:
+                        if st.button(f"⏹️ Stop", key=f"stop_{doc['id']}", help="Stop reading"):
+                            stop_speech_html = """
+                            <script>window.speechSynthesis.cancel();</script>
+                            """
+                            html(stop_speech_html, height=0)
+                    
+                    with col_tts3:
+                        # OpenAI TTS Section for each summary
+                        if 'openai_tts_simple' in dir():
+                            render_simple_tts_section(doc_details['summary'], f"doc_summary_{doc['id']}")
+                    
+                    # Auto-read if enabled
+                    if st.session_state.get('summary_tts_enabled', False) and len(selected_docs) == 1:
+                        text_to_speech(doc_details['summary'])
+                    
+                    # Document metadata
+                    st.markdown("**Document Details:**")
+                    meta_col1, meta_col2, meta_col3 = st.columns(3)
+                    
+                    with meta_col1:
+                        st.metric("Status", doc_details.get('status', 'Unknown'))
+                        if doc_details.get('file_size'):
+                            file_size_mb = round(doc_details['file_size'] / (1024 * 1024), 2)
+                            st.metric("File Size", f"{file_size_mb} MB")
+                    
+                    with meta_col2:
+                        if doc_details.get('processing_time'):
+                            st.metric("Processing Time", f"{doc_details['processing_time']}s")
+                        if doc_details.get('created_at'):
+                            created_date = doc_details['created_at'][:10]
+                            st.metric("Created", created_date)
+                    
+                    with meta_col3:
+                        summary_length = len(doc_details['summary'])
+                        st.metric("Summary Length", f"{summary_length:,} chars")
+                        word_count = len(doc_details['summary'].split())
+                        st.metric("Word Count", f"{word_count:,} words")
+                        
+                else:
+                    st.info("📝 No summary available for this document. The summary may still be processing or there was an issue during generation.")
+                    
+                    # Show processing status if available
+                    if doc_details.get('status') == 'PROCESSING':
+                        st.warning("🔄 Document is still processing. Summary will be available once processing completes.")
+                    elif doc_details.get('error_message'):
+                        with st.expander("❌ Error Details", expanded=False):
+                            st.error(doc_details['error_message'])
+    
     # AI-Generated Document Overview Section
+    st.markdown("---")
     st.subheader("🤖 AI-Generated Document Overview")
     
     with st.spinner("Generating comprehensive document overview..."):
@@ -1569,15 +1643,26 @@ def render_chat_tab(selected_doc_ids):
     """Render the Chat Assistant tab."""
     if not selected_doc_ids:
         st.info("👈 Select documents from the sidebar to start chatting.")
-        st.markdown("""
+        available_methods = get_supported_methods()
+        method_info = {
+            "local": "**Local Search**: Find specific details and facts",
+            "global": "**Global Search**: Discover themes and patterns",
+            "drift": "**Drift Search**: Contextual exploration",
+            "basic": "**Basic Search**: Simple keyword matching",
+            "summary": "**Summary Search**: AI-enhanced semantic similarity using document summaries",
+            "enhanced": "**Enhanced Search**: Two-stage retrieval with raw text embeddings and graph knowledge"
+        }
+        
+        methods_list = "\n".join([f"- {method_info.get(method, method)}" for method in available_methods])
+        
+        st.markdown(f"""
         ### 💬 Chat Assistant
         
         Ask questions about your selected documents using advanced GraphRAG search methods:
         
-        - **Local Search**: Find specific details and facts
-        - **Global Search**: Discover themes and patterns  
-        - **Drift Search**: Contextual exploration
-        - **Basic Search**: Simple keyword matching
+        {methods_list}
+        
+        {'**🆕 Summary Search** uses AI-generated document summaries with vector embeddings for enhanced semantic understanding!' if 'summary' in available_methods else ''}
         """)
         return
     
@@ -1599,11 +1684,22 @@ def render_chat_tab(selected_doc_ids):
     # Query method, model selection, and TTS controls
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
+        # Get available search methods (includes summary if dependencies are available)
+        available_methods = get_supported_methods()
+        method_descriptions = {
+            "local": "Local: specific details and precise answers",
+            "global": "Global: themes, patterns, and broad insights", 
+            "drift": "Drift: contextual and exploratory search",
+            "basic": "Basic: simple keyword-based search",
+            "summary": "Summary: AI-enhanced semantic similarity search",
+            "enhanced": "Enhanced: raw text embeddings + graph knowledge"
+        }
+        
         query_method = st.selectbox(
             "Search Method:",
-            options=["local", "global", "drift", "basic"],
+            options=available_methods,
             index=0,
-            help="Local: specific details, Global: themes/patterns, Drift: contextual search, Basic: simple search",
+            help="; ".join([method_descriptions.get(m, m) for m in available_methods]),
             key="chat_query_method"
         )
     
@@ -1734,6 +1830,12 @@ def render_chat_tab(selected_doc_ids):
                             result = drift_search(selected_doc_ids, query, model=model)
                         elif method == "basic":
                             result = basic_search(selected_doc_ids, query, model=model)
+                        elif method == "summary":
+                            result = summary_search(selected_doc_ids, query, limit=10, model=model)
+                        elif method == "enhanced":
+                            # Enhanced search uses O1 model if selected model starts with 'o1'
+                            use_o1 = model.startswith('o1')
+                            result = enhanced_search(selected_doc_ids, query, use_o1_model=use_o1, limit=5)
                         else:
                             result = local_search(selected_doc_ids, query, model=model)
                         
