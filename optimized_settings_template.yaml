@@ -1,0 +1,103 @@
+# Optimized GraphRAG Settings Template
+# This template provides better performance by increasing concurrency and adding timeouts
+
+root_dir: "."
+
+llm:
+  api_key: ${GRAPHRAG_API_KEY}
+  type: openai_chat
+  model: gpt-3.5-turbo
+  api_base: null
+  api_version: null
+  proxy: null
+  requests_per_minute: 50  # Reduced from auto to prevent rate limits
+  tokens_per_minute: 150000  # Conservative limit
+  max_retries: 5  # Reduced from 10 to fail faster
+  max_retry_wait: 10.0
+  sleep_on_rate_limit_recommendation: true
+  concurrent_requests: 5  # Increased from 1 for better performance
+  request_timeout: 120.0  # Reduced from 180.0 for faster failures
+
+embeddings:
+  llm:
+    api_key: ${GRAPHRAG_API_KEY}
+    type: openai_embedding
+    model: text-embedding-3-small
+    api_base: null
+    api_version: null
+    proxy: null
+    requests_per_minute: 100  # Higher limit for embeddings
+    tokens_per_minute: 200000
+    max_retries: 5
+    max_retry_wait: 10.0
+    sleep_on_rate_limit_recommendation: true
+    concurrent_requests: 10  # Higher concurrency for embeddings
+    batch_size: 16
+    batch_max_tokens: 8191
+    request_timeout: 60.0  # Shorter timeout for embeddings
+  batch_size: 1000
+  batch_max_tokens: 2000000
+  vector_store:
+    type: lancedb
+    db_uri: "./output/lancedb"
+    container_name: "default"
+    overwrite: true
+
+chunks:
+  size: 600  # Reasonable chunk size
+  overlap: 100
+  group_by_columns: [id]
+
+input:
+  type: file
+  file_type: text
+  base_dir: "input"
+  file_encoding: utf-8
+  file_pattern: ".*\\.txt$"
+
+cache:
+  type: file
+  base_dir: "cache"
+
+storage:
+  type: file
+  base_dir: "output"
+
+reporting:
+  type: file
+  base_dir: "logs"
+
+entity_extraction:
+  prompt: "prompts/extract_graph.txt"
+  entity_types: [organization, person, geo, event]
+  max_gleanings: 1
+
+summarize_descriptions:
+  prompt: "prompts/summarize_descriptions.txt"
+  max_length: 500
+
+community_reports:
+  prompt: "prompts/community_report.txt"
+  max_length: 2000
+  max_input_length: 8000
+
+claim_extraction:
+  enabled: false
+  prompt: "prompts/extract_claims.txt"
+  description: "Any claims or facts that could be relevant to information discovery."
+  max_gleanings: 1
+
+local_search:
+  text_unit_prop: 0.5
+  community_prop: 0.1
+  conversation_history_max_turns: 5
+  top_k_entities: 10
+  top_k_relationships: 10
+  max_context_tokens: 12000
+
+global_search:
+  max_context_tokens: 12000
+  data_max_tokens: 12000
+  map_max_length: 1000
+  reduce_max_length: 2000
+  concurrency: 32

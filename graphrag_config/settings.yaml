@@ -17,12 +17,12 @@ models:
     # deployment_name: <azure_model_deployment_name>
     # encoding_model: cl100k_base # automatically set by tiktoken if left undefined
     model_supports_json: true # recommended if this is available for your model.
-    concurrent_requests: 1 # max number of simultaneous LLM requests allowed
+    concurrent_requests: 5 # max number of simultaneous LLM requests allowed
     async_mode: threaded # or asyncio
     retry_strategy: native
-    max_retries: 10
-    tokens_per_minute: auto              # set to null to disable rate limiting
-    requests_per_minute: auto            # set to null to disable rate limiting
+    max_retries: 5
+    tokens_per_minute: 150000              # set to null to disable rate limiting
+    requests_per_minute: 50            # set to null to disable rate limiting
   default_embedding_model:
     type: openai_embedding # or azure_openai_embedding
     # api_base: https://<instance>.openai.azure.com
@@ -35,12 +35,12 @@ models:
     # deployment_name: <azure_model_deployment_name>
     # encoding_model: cl100k_base # automatically set by tiktoken if left undefined
     model_supports_json: true # recommended if this is available for your model.
-    concurrent_requests: 1 # max number of simultaneous LLM requests allowed
+    concurrent_requests: 5 # max number of simultaneous LLM requests allowed
     async_mode: threaded # or asyncio
     retry_strategy: native
-    max_retries: 10
-    tokens_per_minute: auto              # set to null to disable rate limiting
-    requests_per_minute: auto            # set to null to disable rate limiting
+    max_retries: 5
+    tokens_per_minute: 150000              # set to null to disable rate limiting
+    requests_per_minute: 50            # set to null to disable rate limiting
 
 ### Input settings ###
 

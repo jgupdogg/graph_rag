@@ -25,7 +25,7 @@ from pyvis_graph import (
     optimize_for_large_graph
 )
 from app_logic import (
-    processor,
+    get_processor,
     get_processed_documents,
     get_all_documents,
     get_document_by_id,
@@ -36,6 +36,7 @@ from app_logic import (
     reprocess_failed_document,
     get_processing_logs,
     DocumentStatus,
+    check_stuck_documents,
 )
 from query_logic import (
     query_documents,
@@ -258,7 +259,7 @@ st.title("🧠 GraphRAG Explorer")
 st.caption("Interactive knowledge graph exploration and document analysis")
 
 # Initialize application
-processor.init_db()
+get_processor().init_db()
 
 # Check API key availability
 if not check_api_key_availability():
@@ -316,7 +317,7 @@ def load_community_reports(selected_doc_ids):
     
     try:
         # Get document info from database
-        with processor.db_manager as cursor:
+        with get_processor().db_manager as cursor:
             placeholders = ','.join('?' for _ in selected_doc_ids)
             query = f"SELECT id, workspace_path, display_name FROM documents WHERE id IN ({placeholders}) AND status = ?"
             cursor.execute(query, selected_doc_ids + [DocumentStatus.COMPLETED])
@@ -635,7 +636,7 @@ def render_document_management_section():
                     st.rerun()
     
     # Show processing status with enhanced styling
-    all_docs = processor.get_all_documents()
+    all_docs = get_processor().get_all_documents()
     processing_docs = [doc for doc in all_docs if doc['status'] == 'PROCESSING']
     failed_docs = [doc for doc in all_docs if doc['status'] == 'ERROR']
     
@@ -1534,6 +1535,30 @@ def render_graph_tab(selected_doc_ids):
                     st.markdown(f"• **{entity['title']}** ({source_doc}...)")
 
 
+def check_for_stuck_documents_periodically():
+    """Check for stuck documents periodically and show notification."""
+    # Check every 5 minutes (300 seconds) if the app has been running long enough
+    current_time = datetime.now()
+    
+    # Initialize last check time in session state
+    if 'last_stuck_check' not in st.session_state:
+        st.session_state.last_stuck_check = current_time
+    
+    # Check if 5 minutes have passed since last check
+    time_since_last_check = (current_time - st.session_state.last_stuck_check).total_seconds()
+    
+    if time_since_last_check >= 300:  # 5 minutes
+        # Check for stuck documents
+        stuck_docs = check_stuck_documents(timeout_minutes=30)
+        
+        if stuck_docs:
+            st.warning(f"⚠️ Found {len(stuck_docs)} document(s) stuck in processing. They have been marked as ERROR.")
+            logger.info(f"Auto-detected {len(stuck_docs)} stuck documents")
+        
+        # Update last check time
+        st.session_state.last_stuck_check = current_time
+
+
 def main():
     """Main Streamlit app with tab-based navigation."""
     
@@ -1541,7 +1566,10 @@ def main():
     selected_doc_ids = render_universal_sidebar()
     
     # Initialize processor and handle logs if requested
-    processor.init_db()
+    get_processor().init_db()
+    
+    # Periodically check for stuck documents
+    check_for_stuck_documents_periodically()
     
     if st.session_state.get('show_logs', False):
         render_processing_logs()
@@ -1589,10 +1617,10 @@ def render_processing_logs():
         st.rerun()
     
     # Get all docs for log display
-    all_docs = processor.get_all_documents()
+    all_docs = get_processor().get_all_documents()
     
     for doc_id in st.session_state.get('log_doc_ids', []):
-        logs = processor.get_processing_logs(doc_id)
+        logs = get_processor().get_processing_logs(doc_id)
         if logs:
             # Get document name and status
             doc_name = "Unknown"
