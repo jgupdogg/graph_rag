@@ -62,6 +62,23 @@ CURRENT_GRAPHRAG_DIR = Path("graphrag")
 VENV_GRAPHRAG_PATH = Path(__file__).parent / "venv" / "bin" / "graphrag"
 PROJECT_ROOT = Path(__file__).parent.resolve()
 
+# Global processor instance for use by other modules
+processor = None
+
+def get_processor():
+    """Get or create the global GraphRAG processor instance."""
+    global processor
+    if processor is None:
+        processor = GraphRAGProcessor()
+        # Check for stuck documents on startup
+        try:
+            stuck_docs = processor.check_and_handle_stuck_documents(timeout_minutes=30)
+            if stuck_docs:
+                logger.info(f"Fixed {len(stuck_docs)} stuck documents on startup")
+        except Exception as e:
+            logger.warning(f"Error checking stuck documents on startup: {e}")
+    return processor
+
 class DBManager:
     """Context manager for SQLite database operations."""
     
@@ -162,6 +179,46 @@ class GraphRAGProcessor:
             
         logger.info("Database initialized successfully")
     
+    def check_and_handle_stuck_documents(self, timeout_minutes: int = 30) -> List[str]:
+        """Check for documents stuck in PROCESSING status and mark them as ERROR."""
+        try:
+            with self.db_manager as cursor:
+                # Find documents that have been processing for more than timeout_minutes
+                cursor.execute("""
+                    SELECT id, display_name, created_at 
+                    FROM documents 
+                    WHERE status = 'PROCESSING' 
+                    AND datetime(created_at, '+{} minutes') < datetime('now')
+                """.format(timeout_minutes))
+                
+                stuck_docs = cursor.fetchall()
+                stuck_doc_ids = []
+                
+                for doc_id, display_name, created_at in stuck_docs:
+                    error_msg = f"Processing timed out after {timeout_minutes} minutes. Document was stuck in processing since {created_at}."
+                    
+                    # Update status to ERROR
+                    cursor.execute("""
+                        UPDATE documents 
+                        SET status = 'ERROR', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (error_msg, doc_id))
+                    
+                    # Log the timeout
+                    cursor.execute("""
+                        INSERT INTO processing_logs (document_id, stage, message, level, timestamp)
+                        VALUES (?, 'TIMEOUT', ?, 'ERROR', CURRENT_TIMESTAMP)
+                    """, (doc_id, error_msg))
+                    
+                    stuck_doc_ids.append(doc_id)
+                    logger.warning(f"Marked stuck document as ERROR: {display_name} ({doc_id})")
+                
+                return stuck_doc_ids
+                
+        except Exception as e:
+            logger.error(f"Error checking for stuck documents: {e}")
+            return []
+    
     def get_all_documents(self, status: Optional[str] = None) -> List[Dict]:
         """Fetch all documents or documents filtered by status from the database."""
         try:
@@ -193,14 +250,62 @@ class GraphRAGProcessor:
             with self.db_manager as cursor:
                 cursor.execute("""
                     SELECT id, display_name, original_filename, status, workspace_path, created_at, 
-                           updated_at, file_size, processing_time, error_message, summary
+                           updated_at, file_size, processing_time, error_message, summary, metadata
                     FROM documents
                     WHERE id = ?
                 """, (doc_id,))
                 result = cursor.fetchone()
-                return dict(result) if result else None
+                if result:
+                    doc_dict = dict(result)
+                    # Parse metadata JSON if present
+                    if doc_dict.get('metadata'):
+                        try:
+                            doc_dict['metadata'] = json.loads(doc_dict['metadata'])
+                        except json.JSONDecodeError:
+                            doc_dict['metadata'] = {}
+                    # Load section summaries if available
+                    section_summaries = self.get_section_summaries(
+                        doc_id, 
+                        doc_dict.get('workspace_path'),
+                        doc_dict.get('display_name')
+                    )
+                    if section_summaries:
+                        doc_dict['section_summaries'] = section_summaries
+                    return doc_dict
+                return None
         except sqlite3.Error as e:
             logger.error(f"Error getting document by ID: {e}")
+            return None
+    
+    def get_section_summaries(self, doc_id: str, workspace_path: str, display_name: str = None) -> Optional[Dict[str, str]]:
+        """Retrieve section summaries for a document."""
+        try:
+            if not workspace_path:
+                return None
+            
+            # First check workspace-specific cache
+            workspace = Path(workspace_path)
+            section_summary_file = workspace / "cache" / "section_summaries.json"
+            
+            if section_summary_file.exists():
+                with open(section_summary_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get("sections", {})
+            
+            # Check global cache by document name
+            if display_name:
+                try:
+                    from enhanced_document_processor import EnhancedDocumentProcessor
+                    processor = EnhancedDocumentProcessor(api_key="dummy")  # We just need the load method
+                    summaries = processor.load_section_summaries(display_name)
+                    if summaries:
+                        return summaries
+                except ImportError:
+                    logger.warning("Enhanced document processor not available")
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to load section summaries: {e}")
             return None
     
     def get_document_status(self, doc_id: str) -> Optional[str]:
@@ -383,7 +488,7 @@ class GraphRAGProcessor:
     
     
     def _run_graphrag_indexing(self, doc_id: str, workspace_path: Path) -> None:
-        """Run GraphRAG indexing process."""
+        """Run GraphRAG indexing process with timeout protection."""
         self.log_processing_step(doc_id, "GRAPHRAG", f"Running GraphRAG indexing on {workspace_path.resolve()}")
         
         command = [str(VENV_GRAPHRAG_PATH), "index", "--root", str(workspace_path.resolve())]
@@ -391,18 +496,34 @@ class GraphRAGProcessor:
         self.log_processing_step(doc_id, "GRAPHRAG", f"Command: {' '.join(command)}")
         self.log_processing_step(doc_id, "GRAPHRAG", f"Working directory: {PROJECT_ROOT}")
         
-        result = subprocess.run(command, capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        # Set timeout to 30 minutes (1800 seconds) to prevent indefinite hangs
+        timeout_seconds = 1800
+        self.log_processing_step(doc_id, "GRAPHRAG", f"Starting GraphRAG with {timeout_seconds/60:.0f} minute timeout")
         
-        if result.returncode != 0:
-            error_msg = f"GraphRAG failed: {result.stderr}"
-            self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
+        try:
+            result = subprocess.run(
+                command, 
+                capture_output=True, 
+                text=True, 
+                cwd=str(PROJECT_ROOT),
+                timeout=timeout_seconds
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"GraphRAG failed: {result.stderr}"
+                self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
+                if result.stdout:
+                    self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {result.stdout}", "INFO")
+                raise Exception(error_msg)
+            
+            self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
             if result.stdout:
-                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG stdout: {result.stdout}", "INFO")
+                self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {result.stdout}", "INFO")
+                
+        except subprocess.TimeoutExpired:
+            error_msg = f"GraphRAG indexing timed out after {timeout_seconds/60:.0f} minutes. Process was terminated to prevent indefinite hanging."
+            self.log_processing_step(doc_id, "GRAPHRAG", error_msg, "ERROR")
             raise Exception(error_msg)
-        
-        self.log_processing_step(doc_id, "GRAPHRAG", "GraphRAG indexing completed successfully")
-        if result.stdout:
-            self.log_processing_step(doc_id, "GRAPHRAG", f"GraphRAG output: {result.stdout}", "INFO")
     
     def _process_document_core(self, doc_id: str, workspace_path: Path, uploaded_file_buffer: bytes = None, original_filename: str = None) -> None:
         """Core document processing logic shared between new and reprocess workflows."""
@@ -586,6 +707,30 @@ class GraphRAGProcessor:
             
         except Exception as e:
             logger.error(f"Error fixing workspace paths: {e}")
+    
+    def save_enhanced_summary_to_metadata(self, doc_id: str, enhanced_summary_data: dict) -> bool:
+        """Save the enhanced AI summary to document metadata."""
+        try:
+            metadata = {
+                "enhanced_summary": {
+                    "content": enhanced_summary_data.get("ai_summary", ""),
+                    "generated_at": enhanced_summary_data.get("generated_at", ""),
+                    "includes_initial_summary": enhanced_summary_data.get("includes_initial_summary", False),
+                    "metrics": enhanced_summary_data.get("metrics", {})
+                }
+            }
+            
+            with self.db_manager as cursor:
+                cursor.execute(
+                    "UPDATE documents SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata), doc_id)
+                )
+            
+            logger.info(f"Saved enhanced summary to metadata for document {doc_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving enhanced summary to metadata: {e}")
+            return False
 
     def reprocess_failed_document(self, doc_id: str) -> str:
         """Reprocess a failed document."""
@@ -774,52 +919,120 @@ class GraphRAGProcessor:
             logger.error(f"Error getting processing logs: {e}")
             return []
     
-
-# Global instance
-processor = GraphRAGProcessor()
+    def check_and_handle_stuck_documents(self, timeout_minutes: int = 30) -> List[str]:
+        """
+        Check for documents stuck in PROCESSING status and mark them as ERROR.
+        
+        Args:
+            timeout_minutes: Number of minutes after which a document is considered stuck
+            
+        Returns:
+            List of document IDs that were marked as stuck
+        """
+        try:
+            stuck_docs = []
+            with self.db_manager as cursor:
+                # Find documents that have been in PROCESSING status for too long
+                cursor.execute("""
+                    SELECT id, display_name, 
+                           CAST((julianday('now') - julianday(updated_at)) * 24 * 60 AS INTEGER) as minutes_processing
+                    FROM documents
+                    WHERE status = 'PROCESSING'
+                    AND CAST((julianday('now') - julianday(updated_at)) * 24 * 60 AS INTEGER) > ?
+                """, (timeout_minutes,))
+                
+                results = cursor.fetchall()
+                
+                for doc_id, display_name, minutes in results:
+                    logger.warning(f"Document {display_name} (ID: {doc_id}) has been processing for {minutes} minutes")
+                    
+                    # Check last processing log
+                    cursor.execute("""
+                        SELECT stage, message, timestamp
+                        FROM processing_logs
+                        WHERE document_id = ?
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, (doc_id,))
+                    
+                    last_log = cursor.fetchone()
+                    last_stage = last_log[0] if last_log else "UNKNOWN"
+                    
+                    # Update status to ERROR
+                    error_msg = f"Processing timed out after {minutes} minutes. Last stage: {last_stage}. Likely due to API rate limits."
+                    cursor.execute("""
+                        UPDATE documents
+                        SET status = 'ERROR',
+                            error_message = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (error_msg, doc_id))
+                    
+                    # Log the timeout
+                    self.log_processing_step(doc_id, "TIMEOUT", error_msg, "ERROR")
+                    
+                    stuck_docs.append(doc_id)
+                    logger.info(f"Marked document {doc_id} as ERROR due to timeout")
+                
+                cursor.connection.commit()
+                
+            return stuck_docs
+            
+        except Exception as e:
+            logger.error(f"Error checking for stuck documents: {e}")
+            return []
+    
 
 # Convenience functions for backward compatibility
 def init_db():
     """Initialize the database."""
-    return processor.init_db()
+    return get_processor().init_db()
 
 def get_processed_documents():
     """Get all processed documents."""
-    return processor.get_processed_documents()
+    return get_processor().get_processed_documents()
 
 def process_new_document(uploaded_file, display_name: str = None):
     """Process a new document."""
-    return processor.process_new_document(uploaded_file, display_name)
+    return get_processor().process_new_document(uploaded_file, display_name)
 
 def load_and_merge_graphs(selected_doc_ids: List[str]):
     """Load and merge graphs from selected documents."""
-    return processor.load_and_merge_graphs(selected_doc_ids)
+    return get_processor().load_and_merge_graphs(selected_doc_ids)
 
 def delete_document(doc_id: str):
     """Delete a document."""
-    return processor.delete_document(doc_id)
+    return get_processor().delete_document(doc_id)
 
 def get_document_status(doc_id: str):
     """Get document status."""
-    return processor.get_document_status(doc_id)
+    return get_processor().get_document_status(doc_id)
 
 def update_document_status(doc_id: str, status: str, error_message: str = None):
     """Update document status."""
-    return processor.update_document_status(doc_id, status, error_message)
+    return get_processor().update_document_status(doc_id, status, error_message)
 
 def reprocess_failed_document(doc_id: str):
     """Reprocess a failed document."""
-    return processor.reprocess_failed_document(doc_id)
+    return get_processor().reprocess_failed_document(doc_id)
 
 def get_processing_logs(doc_id: str):
     """Get processing logs for a document."""
-    return processor.get_processing_logs(doc_id)
+    return get_processor().get_processing_logs(doc_id)
 
 def get_all_documents():
     """Get all documents."""
-    return processor.get_all_documents()
+    return get_processor().get_all_documents()
 
 def get_document_by_id(doc_id: str):
     """Get a single document by ID with all details including summary."""
-    return processor.get_document_by_id(doc_id)
+    return get_processor().get_document_by_id(doc_id)
+
+def check_stuck_documents(timeout_minutes: int = 30):
+    """Check for and handle documents stuck in processing."""
+    return get_processor().check_and_handle_stuck_documents(timeout_minutes)
+
+def save_enhanced_summary_to_metadata(doc_id: str, enhanced_summary_data: dict):
+    """Save the enhanced AI summary to document metadata."""
+    return get_processor().save_enhanced_summary_to_metadata(doc_id, enhanced_summary_data)
 

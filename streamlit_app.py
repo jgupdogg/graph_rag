@@ -37,6 +37,7 @@ from app_logic import (
     get_processing_logs,
     DocumentStatus,
     check_stuck_documents,
+    save_enhanced_summary_to_metadata,
 )
 from query_logic import (
     query_documents,
@@ -370,16 +371,24 @@ def generate_ai_document_summary(selected_doc_ids):
         doc_id = doc['id']
         workspace_path = Path(doc['workspace_path'])
         
+        # Get full document details including the initial summary
+        doc_details = get_document_by_id(doc_id)
+        initial_summary = doc_details.get('summary', '') if doc_details else ''
+        
         # Check for existing summary cache
         summary_cache_file = workspace_path / "ai_document_summary_cache.json"
         if summary_cache_file.exists():
             try:
                 with open(summary_cache_file, 'r') as f:
                     cached_data = json.load(f)
-                # Check if cache is recent (less than 7 days old)
+                # Check if cache is recent (less than 7 days old) and uses new format
                 from datetime import timedelta
                 cache_time = datetime.fromisoformat(cached_data.get('generated_at', '2000-01-01'))
-                if datetime.now() - cache_time < timedelta(days=7):
+                # Force regeneration if cache doesn't have the new user-familiar format
+                has_new_format = 'Key Topics Explored' in cached_data.get('ai_summary', '')
+                if (datetime.now() - cache_time < timedelta(days=7) and 
+                    cached_data.get('includes_initial_summary', False) and
+                    has_new_format):
                     return cached_data
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass  # Continue to regenerate if cache is invalid
@@ -404,6 +413,23 @@ def generate_ai_document_summary(selected_doc_ids):
                 sorted_reports = reports_df.sort_values(['size', 'rank'], ascending=[False, False])
                 top_reports = sorted_reports.head(10)  # Get top 10 largest communities
         
+        # Gather document processing metrics
+        entities, relationships = load_multi_document_data([doc_id])
+        entity_count = len(entities) if not entities.empty else 0
+        relationship_count = len(relationships) if not relationships.empty else 0
+        entity_types = entities['type'].nunique() if not entities.empty and 'type' in entities.columns else 0
+        
+        # Count chunks from the summary vector store if available
+        chunk_count = 0
+        try:
+            vector_cache_file = workspace_path / "cache" / "chunk_summaries.json"
+            if vector_cache_file.exists():
+                with open(vector_cache_file, 'r') as f:
+                    chunk_data = json.load(f)
+                    chunk_count = len(chunk_data.get("summaries", []))
+        except:
+            pass
+        
         # Check for existing classification cache
         classification_data = ""
         doc_summary_cache = workspace_path / "document_summary_cache.json"
@@ -418,14 +444,27 @@ def generate_ai_document_summary(selected_doc_ids):
         
         # Create comprehensive prompt for AI summary
         prompt_parts = [
-            "Please provide a comprehensive document summary with bullet points for major takeaways based on the following information:",
+            f"You are analyzing a document for a user who is already familiar with it. Provide a practical analysis that highlights the most important aspects and insights discovered through processing.",
             f"\n## Document: {doc['display_name']}"
         ]
         
-        if classification_data:
-            prompt_parts.append(f"\n## Previous Classification:\n{classification_data}")
+        # Include initial two-stage summary as the foundation
+        if initial_summary:
+            prompt_parts.append(f"\n## Initial Document Summary (Two-Stage Analysis):\n{initial_summary}")
         
-        if text_excerpt:
+        # Add document processing metrics
+        prompt_parts.append(f"\n## Document Processing Metrics:")
+        prompt_parts.append(f"- **Entities Extracted:** {entity_count:,}")
+        prompt_parts.append(f"- **Relationships Identified:** {relationship_count:,}")
+        prompt_parts.append(f"- **Entity Types:** {entity_types}")
+        prompt_parts.append(f"- **Document Chunks:** {chunk_count}")
+        prompt_parts.append(f"- **Community Reports:** {len(top_reports)}")
+        prompt_parts.append(f"- **Processing Time:** {doc.get('processing_time', 'N/A')}s")
+        
+        if classification_data:
+            prompt_parts.append(f"\n## Document Classification:\n{classification_data}")
+        
+        if text_excerpt and not initial_summary:  # Only include excerpt if no initial summary
             prompt_parts.append(f"\n## Document Content (First 2500 characters):\n{text_excerpt}")
         
         if len(top_reports) > 0:
@@ -434,32 +473,39 @@ def generate_ai_document_summary(selected_doc_ids):
                 title = report.get('title', 'Untitled')
                 summary = report.get('summary', 'No summary available')
                 size = report.get('size', 'Unknown')
-                prompt_parts.append(f"\n{i}. **{title}** (Size: {size}): {summary}")
+                rank = report.get('rank', 0)
+                prompt_parts.append(f"\n{i}. **{title}** (Size: {size}, Rank: {rank:.1f}): {summary}")
         
         prompt_parts.append("""
-\n## Please provide a concise summary with the following sections:
+\n## Please provide an enhanced document analysis that assumes the user is familiar with their document:
 
-### Executive Summary
-Provide a 2-3 sentence overview of the document.
+### High-Level Summary
+Provide a concise 2-3 sentence overview of what this document covers and its main purpose.
 
-### Major Takeaways
-List 5-7 bullet points highlighting the most important information, insights, or requirements from the document. Focus on concrete, actionable items.
+### Key Topics Explored
+Identify and briefly explain 3-4 of the most significant topics or themes found in the document based on the analysis:
+- Topic 1: Brief explanation of what was found
+- Topic 2: Brief explanation of what was found  
+- Topic 3: Brief explanation of what was found
+- Topic 4: Brief explanation of what was found (if applicable)
 
-### Document Details
-- **Type & Purpose**: What kind of document and its objective
-- **Primary Focus**: The central theme or domain
-- **Target Audience**: Who would use this document
-- **Key Topics**: Main subject areas covered
+### Key Insights & Important Points
+List 6-8 bullet points highlighting:
+- Most important information and conclusions from the document
+- Significant patterns or relationships discovered through analysis
+- Notable findings from the community analysis
+- Any actionable insights or recommendations
 
-Keep the entire response concise but informative, approximately 300-400 words total. Use bullet points where appropriate for clarity.""")
+Keep the entire response focused and practical, approximately 300-400 words total. Avoid redundant explanations of document type or basic structure.""")
         
         full_prompt = "".join(prompt_parts)
         
-        # Use query_documents to generate the summary
+        # Use query_documents with o1-mini for enhanced reasoning
         result = query_documents(
             doc_ids=[doc_id],
             query=full_prompt,
-            method="global"  # Use global search for comprehensive overview
+            method="global",  # Use global search for comprehensive overview
+            model="o1-mini"   # Use reasoning model for complex summarization
         )
         
         if result.success:
@@ -469,8 +515,17 @@ Keep the entire response concise but informative, approximately 300-400 words to
                 "ai_summary": result.response,
                 "classification": classification_data,
                 "generated_at": datetime.now().isoformat(),
-                "method_used": "global",
-                "source_reports_count": len(top_reports)
+                "method_used": "global_o1-mini",
+                "source_reports_count": len(top_reports),
+                "includes_initial_summary": bool(initial_summary),
+                "metrics": {
+                    "entities": entity_count,
+                    "relationships": relationship_count,
+                    "entity_types": entity_types,
+                    "chunks": chunk_count,
+                    "communities": len(top_reports),
+                    "processing_time": doc.get('processing_time', 0)
+                }
             }
             
             # Cache the result
@@ -479,6 +534,9 @@ Keep the entire response concise but informative, approximately 300-400 words to
                     json.dump(summary_data, f, indent=2)
             except Exception as e:
                 logger.warning(f"Failed to cache AI summary: {e}")
+            
+            # Save enhanced summary to document metadata
+            save_enhanced_summary_to_metadata(doc_id, summary_data)
             
             return summary_data
         else:
@@ -901,441 +959,144 @@ def render_document_summary_tab(selected_doc_ids):
     all_docs = get_all_documents()
     selected_docs = [doc for doc in all_docs if doc['id'] in selected_doc_ids]
     
-    # Header with TTS controls
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        st.title("📊 Document Summary")
-        st.caption("AI-powered overview, community insights, and document metadata")
-    with col2:
-        st.markdown("### 🔊 Audio")
-        # Initialize TTS settings for summary tab if not exists
-        if "summary_tts_enabled" not in st.session_state:
-            st.session_state.summary_tts_enabled = False
-        if "summary_tts_rate" not in st.session_state:
-            st.session_state.summary_tts_rate = 0.8
-        
-        # TTS toggle for summaries
-        summary_tts_enabled = st.checkbox(
-            "Auto-read summaries",
-            value=st.session_state.summary_tts_enabled,
-            help="Automatically read document summaries aloud",
-            key="summary_tts_toggle"
-        )
-        st.session_state.summary_tts_enabled = summary_tts_enabled
-        
-        # Stop speech button
-        if st.button("⏹️ Stop", help="Stop all audio", key="summary_stop_speech"):
-            stop_summary_speech_html = """
-            <script>
-            window.speechSynthesis.cancel();
-            console.log('TTS: Speech cancelled');
-            </script>
-            """
-            html(stop_summary_speech_html, height=0)
-        
-        # Test TTS button for debugging
-        if st.button("🧪 Test TTS", help="Test text-to-speech with simple text", key="test_tts"):
-            text_to_speech("Hello! This is a test of the text to speech feature. Can you hear me?")
-        
-        # Voice status check button
-        if st.button("🔍 Check TTS Status", help="Check if text-to-speech is available", key="check_tts_status"):
-            check_tts_html = """
-            <script>
-            function checkTTSStatus() {
-                console.log('=== TTS STATUS CHECK ===');
-                
-                // Check basic support
-                if (!('speechSynthesis' in window)) {
-                    alert('❌ Speech Synthesis API not supported in this browser');
-                    return;
-                }
-                
-                console.log('✅ Speech Synthesis API is supported');
-                
-                // Check voices
-                const voices = window.speechSynthesis.getVoices();
-                console.log('Voices available:', voices.length);
-                
-                let statusMessage = `TTS Status Report:\\n`;
-                statusMessage += `• Browser: ${navigator.userAgent.split(' ')[0]}\\n`;
-                statusMessage += `• Speech API: ✅ Supported\\n`;
-                statusMessage += `• Available voices: ${voices.length}\\n`;
-                
-                if (voices.length === 0) {
-                    statusMessage += `\\n❌ NO VOICES AVAILABLE\\n\\nThis is the root cause of TTS failure.\\n\\nSolutions for Linux:\\n`;
-                    statusMessage += `• Install: sudo apt install espeak espeak-data libespeak1 libespeak-dev\\n`;
-                    statusMessage += `• Install: sudo apt install speech-dispatcher\\n`;
-                    statusMessage += `• Try different browser (Chrome/Chromium usually work best)\\n`;
-                    statusMessage += `• Check: sudo systemctl status speech-dispatcher\\n`;
-                } else {
-                    statusMessage += `\\n✅ VOICES AVAILABLE:\\n`;
-                    voices.forEach((voice, i) => {
-                        if (i < 5) { // Show first 5 voices
-                            statusMessage += `  ${i+1}. ${voice.name} (${voice.lang})${voice.default ? ' [DEFAULT]' : ''}\\n`;
-                        }
-                    });
-                }
-                
-                alert(statusMessage);
-                console.log('=== END TTS STATUS ===');
-            }
-            
-            // Wait for voices then check
-            if (window.speechSynthesis.getVoices().length === 0) {
-                window.speechSynthesis.addEventListener('voiceschanged', checkTTSStatus, { once: true });
-                setTimeout(checkTTSStatus, 1000); // Fallback
-            } else {
-                checkTTSStatus();
-            }
-            </script>
-            """
-            html(check_tts_html, height=0)
+    st.title("📊 Document Summary")
     
-    # Voice Settings (expandable)
-    with st.expander("🎛️ Voice Settings", expanded=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Speech rate control
-            summary_tts_rate = st.slider(
-                "Speech Speed",
-                min_value=0.3,
-                max_value=2.0,
-                value=st.session_state.get('summary_tts_rate', 0.8),
-                step=0.1,
-                help="Adjust speaking speed (0.3 = very slow, 2.0 = very fast)",
-                key="summary_tts_rate_slider"
-            )
-            st.session_state.summary_tts_rate = summary_tts_rate
-            
-            # Initialize voice selection
-            if "selected_voice_index" not in st.session_state:
-                st.session_state.selected_voice_index = 0
-        
-        with col2:
-            # Voice selection dropdown (populated by JavaScript)
-            voice_selection_html = f"""
-            <div id="voice-selector-container">
-                <select id="voice-selector" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ddd;">
-                    <option value="-1">Loading voices...</option>
-                </select>
-            </div>
-            <script>
-            function loadVoices() {{
-                const voices = window.speechSynthesis.getVoices();
-                const select = document.getElementById('voice-selector');
-                
-                if (voices.length > 0) {{
-                    select.innerHTML = '';
-                    
-                    // Group voices by language
-                    const englishVoices = voices.filter(v => v.lang.startsWith('en'));
-                    const otherVoices = voices.filter(v => !v.lang.startsWith('en'));
-                    
-                    // Add English voices first
-                    if (englishVoices.length > 0) {{
-                        const optgroup = document.createElement('optgroup');
-                        optgroup.label = 'English Voices';
-                        
-                        englishVoices.forEach((voice, index) => {{
-                            const option = document.createElement('option');
-                            option.value = voices.indexOf(voice);
-                            option.text = voice.name + ' (' + voice.lang + ')';
-                            if (voice.default) option.text += ' [DEFAULT]';
-                            optgroup.appendChild(option);
-                        }});
-                        
-                        select.appendChild(optgroup);
-                    }}
-                    
-                    // Add other voices
-                    if (otherVoices.length > 0) {{
-                        const optgroup = document.createElement('optgroup');
-                        optgroup.label = 'Other Languages';
-                        
-                        otherVoices.forEach(voice => {{
-                            const option = document.createElement('option');
-                            option.value = voices.indexOf(voice);
-                            option.text = voice.name + ' (' + voice.lang + ')';
-                            optgroup.appendChild(option);
-                        }});
-                        
-                        select.appendChild(optgroup);
-                    }}
-                    
-                    // Restore selected voice
-                    select.value = {st.session_state.get('selected_voice_index', 0)};
-                    
-                    // Handle voice selection
-                    select.onchange = function() {{
-                        const selectedIndex = parseInt(select.value);
-                        // Store in session state via hidden input
-                        const hiddenInput = document.getElementById('selected-voice-index');
-                        if (hiddenInput) {{
-                            hiddenInput.value = selectedIndex;
-                        }}
-                        console.log('Selected voice index:', selectedIndex);
-                        window.selectedVoiceIndex = selectedIndex;
-                    }};
-                    
-                    // Set initial selection
-                    window.selectedVoiceIndex = parseInt(select.value);
-                    
-                }} else {{
-                    select.innerHTML = '<option value="-1">No voices available</option>';
-                }}
-            }}
-            
-            // Load voices on page load
-            if (window.speechSynthesis.getVoices().length === 0) {{
-                window.speechSynthesis.addEventListener('voiceschanged', loadVoices, {{ once: true }});
-            }} else {{
-                loadVoices();
-            }}
-            
-            // Also try loading after a delay
-            setTimeout(loadVoices, 500);
-            </script>
-            """
-            
-            st.markdown("**Select Voice:**")
-            components.html(voice_selection_html, height=60)
-            
-            # Test button with current settings
-            if st.button("🎤 Test Settings", help="Test with current voice and speed", key="test_voice_settings"):
-                test_text = "Testing voice settings. This is how I will sound when reading your documents."
-                test_settings_html = f"""
-                <script>
-                function testVoiceSettings() {{
-                    const text = "{test_text}";
-                    const rate = {summary_tts_rate};
-                    const voiceIndex = window.selectedVoiceIndex || 0;
-                    
-                    window.speechSynthesis.cancel();
-                    
-                    const utterance = new SpeechSynthesisUtterance(text);
-                    utterance.rate = rate;
-                    utterance.pitch = 1.0;
-                    utterance.volume = 1.0;
-                    
-                    const voices = window.speechSynthesis.getVoices();
-                    if (voices.length > voiceIndex && voiceIndex >= 0) {{
-                        utterance.voice = voices[voiceIndex];
-                        console.log('Testing with voice:', voices[voiceIndex].name);
-                    }}
-                    
-                    console.log('Testing with rate:', rate);
-                    window.speechSynthesis.speak(utterance);
-                }}
-                
-                // Wait for voices then test
-                if (window.speechSynthesis.getVoices().length === 0) {{
-                    setTimeout(testVoiceSettings, 500);
-                }} else {{
-                    testVoiceSettings();
-                }}
-                </script>
-                """
-                html(test_settings_html, height=0)
+    # First, check if we have an enhanced summary in metadata
+    doc_details = get_document_by_id(selected_docs[0]['id']) if selected_docs else None
+    has_enhanced_summary = (doc_details and 
+                           doc_details.get('metadata') and 
+                           doc_details['metadata'].get('enhanced_summary') and
+                           doc_details['metadata']['enhanced_summary'].get('content'))
     
-    # Two-Stage Document Summaries Section
+    # AI-Generated Document Overview Section (moved to top)
     st.markdown("---")
-    st.subheader("📄 Document Summaries")
-    st.caption("Comprehensive summaries generated from document content analysis")
     
-    # Display summaries for each selected document
-    for doc in selected_docs:
-        doc_details = get_document_by_id(doc['id'])
-        if doc_details:
-            with st.expander(f"📄 {doc_details['display_name']}", expanded=len(selected_docs) == 1):
-                if doc_details.get('summary'):
-                    # Display the summary with markdown formatting
-                    st.markdown(doc_details['summary'])
-                    
-                    # TTS controls for individual document summary
-                    col_tts1, col_tts2, col_tts3 = st.columns([1, 1, 2])
-                    
-                    with col_tts1:
-                        if st.button(f"🔊 Read Aloud", key=f"tts_{doc['id']}", help="Read summary with browser TTS"):
-                            text_to_speech(doc_details['summary'])
-                    
-                    with col_tts2:
-                        if st.button(f"⏹️ Stop", key=f"stop_{doc['id']}", help="Stop reading"):
-                            stop_speech_html = """
-                            <script>window.speechSynthesis.cancel();</script>
-                            """
-                            html(stop_speech_html, height=0)
-                    
-                    with col_tts3:
-                        # OpenAI TTS Section for each summary
-                        if 'openai_tts_simple' in dir():
-                            render_simple_tts_section(doc_details['summary'], f"doc_summary_{doc['id']}")
-                    
-                    # Auto-read if enabled
-                    if st.session_state.get('summary_tts_enabled', False) and len(selected_docs) == 1:
-                        text_to_speech(doc_details['summary'])
-                    
-                    # Document metadata
-                    st.markdown("**Document Details:**")
-                    meta_col1, meta_col2, meta_col3 = st.columns(3)
-                    
-                    with meta_col1:
-                        st.metric("Status", doc_details.get('status', 'Unknown'))
-                        if doc_details.get('file_size'):
-                            file_size_mb = round(doc_details['file_size'] / (1024 * 1024), 2)
-                            st.metric("File Size", f"{file_size_mb} MB")
-                    
-                    with meta_col2:
-                        if doc_details.get('processing_time'):
-                            st.metric("Processing Time", f"{doc_details['processing_time']}s")
-                        if doc_details.get('created_at'):
-                            created_date = doc_details['created_at'][:10]
-                            st.metric("Created", created_date)
-                    
-                    with meta_col3:
-                        summary_length = len(doc_details['summary'])
-                        st.metric("Summary Length", f"{summary_length:,} chars")
-                        word_count = len(doc_details['summary'].split())
-                        st.metric("Word Count", f"{word_count:,} words")
-                        
-                else:
-                    st.info("📝 No summary available for this document. The summary may still be processing or there was an issue during generation.")
-                    
-                    # Show processing status if available
-                    if doc_details.get('status') == 'PROCESSING':
-                        st.warning("🔄 Document is still processing. Summary will be available once processing completes.")
-                    elif doc_details.get('error_message'):
-                        with st.expander("❌ Error Details", expanded=False):
-                            st.error(doc_details['error_message'])
+    # Display enhanced summary if available, otherwise generate it
+    if has_enhanced_summary:
+        # Show the cached enhanced summary
+        st.subheader("🤖 Comprehensive Document Analysis")
+        enhanced_summary = doc_details['metadata']['enhanced_summary']
+        st.success(enhanced_summary['content'])
+        
+        # Show metrics
+        if enhanced_summary.get('metrics'):
+            metrics = enhanced_summary['metrics']
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Entities", f"{metrics.get('entities', 0):,}")
+            with col2:
+                st.metric("Relationships", f"{metrics.get('relationships', 0):,}")
+            with col3:
+                st.metric("Communities", metrics.get('communities', 0))
+            with col4:
+                st.metric("Processing Time", f"{metrics.get('processing_time', 0)}s")
+    else:
+        # Generate enhanced summary
+        st.subheader("🤖 Comprehensive Document Analysis")
+        with st.spinner("Generating comprehensive document overview..."):
+            ai_summary_data = generate_ai_document_summary(selected_doc_ids)
+        
+        if ai_summary_data:
+            # Display the AI summary with better contrast
+            st.success(ai_summary_data['ai_summary'])
+            
+            # Show metrics
+            if ai_summary_data.get('metrics'):
+                metrics = ai_summary_data['metrics']
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Entities", f"{metrics.get('entities', 0):,}")
+                with col2:
+                    st.metric("Relationships", f"{metrics.get('relationships', 0):,}")
+                with col3:
+                    st.metric("Communities", metrics.get('communities', 0))
+                with col4:
+                    st.metric("Processing Time", f"{metrics.get('processing_time', 0)}s")
+        else:
+            st.warning("⚠️ Unable to generate AI summary. The document analysis may take a moment to complete.")
     
-    # Section Summaries
+    # Browser TTS button
+    if (has_enhanced_summary and doc_details['metadata']['enhanced_summary'].get('content')) or (ai_summary_data and ai_summary_data.get('ai_summary')):
+        summary_text = (doc_details['metadata']['enhanced_summary']['content'] if has_enhanced_summary 
+                       else ai_summary_data['ai_summary'])
+        if st.button("🔊 Browser TTS", key="summary_browser_tts", help="Read summary with browser TTS"):
+            text_to_speech(summary_text)
+        
+        # OpenAI TTS Section for Summary
+        render_simple_tts_section(summary_text, "summary")
+    
+    # Two-Stage Document Summaries Section (now expandable)
     st.markdown("---")
-    st.subheader("📑 Document Section Summaries")
-    st.caption("Hierarchical section summaries with individual text-to-speech controls")
+    with st.expander("📄 Initial Document Summaries", expanded=False):
+        st.caption("Two-stage summaries generated during document processing")
+        
+        # Display summaries for each selected document
+        for doc in selected_docs:
+            doc_details = get_document_by_id(doc['id'])
+            if doc_details and doc_details.get('summary'):
+                st.markdown(f"### {doc_details['display_name']}")
+                st.markdown(doc_details['summary'])
+                
+                # Document metadata
+                st.markdown("**Document Details:**")
+                meta_col1, meta_col2, meta_col3 = st.columns(3)
+                
+                with meta_col1:
+                    st.metric("Status", doc_details.get('status', 'Unknown'))
+                    if doc_details.get('file_size'):
+                        file_size_mb = round(doc_details['file_size'] / (1024 * 1024), 2)
+                        st.metric("File Size", f"{file_size_mb} MB")
+                
+                with meta_col2:
+                    if doc_details.get('processing_time'):
+                        st.metric("Processing Time", f"{doc_details['processing_time']}s")
+                    if doc_details.get('created_at'):
+                        created_date = doc_details['created_at'][:10]
+                        st.metric("Created", created_date)
+                
+                with meta_col3:
+                    summary_length = len(doc_details['summary'])
+                    st.metric("Summary Length", f"{summary_length:,} chars")
+                    word_count = len(doc_details['summary'].split())
+                    st.metric("Word Count", f"{word_count:,} words")
+                    
+            else:
+                st.info(f"📝 No summary available for {doc['display_name']}.")
     
-    # Display section summaries for each selected document
-    for doc in selected_docs:
-        doc_details = get_document_by_id(doc['id'])
-        if doc_details and doc_details.get('section_summaries'):
-            with st.expander(f"📑 Sections: {doc_details['display_name']}", expanded=len(selected_docs) == 1):
+    # Section Summaries (now expandable by default)
+    st.markdown("---")
+    with st.expander("📑 Document Section Summaries", expanded=False):
+        st.caption("Section summaries organized by document structure")
+    
+        # Display section summaries for each selected document
+        for doc in selected_docs:
+            doc_details = get_document_by_id(doc['id'])
+            if doc_details and doc_details.get('section_summaries'):
+                st.markdown(f"### {doc_details['display_name']} - {len(doc_details.get('section_summaries', {}))} sections")
                 section_summaries = doc_details['section_summaries']
                 
                 # Create a hierarchical display of sections
-                st.markdown(f"**Found {len(section_summaries)} sections**")
-                
                 for i, (section_path, summary) in enumerate(section_summaries.items()):
-                    # Create a container for each section
-                    with st.container():
-                        # Section header with hierarchy indication
-                        hierarchy_level = section_path.count(' > ')
-                        indent = "&nbsp;" * (hierarchy_level * 4)
-                        st.markdown(f"{indent}**{section_path}**")
-                        
-                        # Section summary
-                        st.markdown(f"{indent}{summary}")
-                        
-                        # TTS controls for section
-                        col1, col2, col3 = st.columns([1, 1, 4])
-                        
-                        with col1:
-                            if st.button("🔊 Read", key=f"tts_section_{doc['id']}_{i}", 
-                                       help="Read this section with browser TTS"):
-                                text_to_speech(f"Section: {section_path}. {summary}")
-                        
-                        with col2:
-                            if st.button("⏹️ Stop", key=f"stop_section_{doc['id']}_{i}",
-                                       help="Stop reading"):
-                                stop_speech_html = """
-                                <script>window.speechSynthesis.cancel();</script>
-                                """
-                                html(stop_speech_html, height=0)
-                        
-                        st.markdown("---")
-                
-                # Add button to read all sections
-                if st.button(f"📖 Read All Sections", key=f"read_all_sections_{doc['id']}",
-                           help="Read all sections sequentially"):
-                    # Combine all sections into one text
-                    all_sections_text = ""
-                    for section_path, summary in section_summaries.items():
-                        all_sections_text += f"Section: {section_path}. {summary}. "
-                    text_to_speech(all_sections_text)
-                
-                # OpenAI TTS for all sections
-                if section_summaries:
-                    st.markdown("**🎤 Generate Audio File (OpenAI TTS)**")
-                    # Combine all sections for OpenAI TTS
-                    combined_text = "\n\n".join([f"{path}: {summary}" for path, summary in section_summaries.items()])
-                    render_simple_tts_section(combined_text, f"all_sections_{doc['id']}")
-        else:
-            with st.expander(f"📑 Sections: {doc['display_name']}", expanded=False):
-                st.info("No section summaries available for this document.")
-    
-    # AI-Generated Document Overview Section
-    st.markdown("---")
-    st.subheader("🤖 AI-Generated Document Overview")
-    
-    with st.spinner("Generating comprehensive document overview..."):
-        ai_summary_data = generate_ai_document_summary(selected_doc_ids)
-    
-    if ai_summary_data:
-        # Display the AI summary with better contrast
-        st.markdown("### 📋 Comprehensive Document Analysis")
-        
-        # Show the AI-generated summary with proper styling and TTS
-        st.markdown("**AI Summary:**")
-        st.success(ai_summary_data['ai_summary'])
-        
-        # Browser TTS button
-        if st.button("🔊 Browser TTS", key="summary_browser_tts", help="Read summary with browser TTS"):
-            text_to_speech(ai_summary_data['ai_summary'])
-        
-        # OpenAI TTS Section for Summary
-        render_simple_tts_section(ai_summary_data['ai_summary'], "summary")
-        
-        # Auto-read summary if enabled
-        if st.session_state.get('summary_tts_enabled', False):
-            summary_text = ai_summary_data['ai_summary']
-            # Use current voice settings for auto-read
-            text_to_speech(summary_text)
-        
-        # Show additional metadata in columns
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Analysis Method", ai_summary_data.get('method_used', 'N/A').title())
-        with col2:
-            st.metric("Source Reports", ai_summary_data.get('source_reports_count', 0))
-        with col3:
-            from datetime import datetime
-            gen_time = ai_summary_data.get('generated_at', '')
-            if gen_time:
-                try:
-                    gen_date = datetime.fromisoformat(gen_time).strftime("%Y-%m-%d %H:%M")
-                    st.metric("Generated", gen_date)
-                except:
-                    st.metric("Generated", "Recently")
+                    # Section header with hierarchy indication
+                    hierarchy_level = section_path.count(' > ')
+                    indent = "&nbsp;" * (hierarchy_level * 4)
+                    
+                    # Display section with clean formatting
+                    st.markdown(f"{indent}**{section_path}**")
+                    st.markdown(f"{indent}{summary}")
+                    
+                    # Add subtle separator between sections
+                    if i < len(section_summaries) - 1:
+                        st.markdown(f"{indent}―――")
             else:
-                st.metric("Generated", "Unknown")
-        
-        # Show original classification if available
-        if ai_summary_data.get('classification'):
-            with st.expander("📋 Previous Document Classification", expanded=False):
-                st.markdown(ai_summary_data['classification'])
-                
-    else:
-        st.warning("⚠️ Unable to generate AI summary. The document analysis may take a moment to complete, or there might be an issue with the AI service.")
-        
-        # Fallback: show basic document info
-        doc_name = selected_docs[0]['display_name'] if selected_docs else "Unknown Document"
-        st.info(f"📄 Document: **{doc_name}** - Use the chat feature for detailed analysis.")
+                st.info(f"No section summaries available for {doc['display_name']}.")
     
+    
+    # Document Metadata Section (now expandable)
     st.markdown("---")
-    
-    # Document Metadata Section
-    st.subheader("📄 Document Information")
-    
-    for doc in selected_docs:
-        with st.expander(f"📄 {doc['display_name']}", expanded=True):
+    with st.expander("📄 Document Information", expanded=False):
+        for doc in selected_docs:
+            st.markdown(f"### {doc['display_name']}")
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -1365,73 +1126,277 @@ def render_document_summary_tab(selected_doc_ids):
                     entity_types = entities['type'].value_counts() if 'type' in entities.columns else pd.Series()
                     st.metric("Entity Types", len(entity_types))
     
-    # Community Reports Section
+    # Community Reports Section (expandable)
     st.markdown("---")
-    st.subheader("📋 Community Reports")
-    
-    # Load community reports
-    with st.spinner("Loading community reports..."):
-        reports_df = load_community_reports(selected_doc_ids)
-    
-    if reports_df.empty:
-        st.info("No community reports found for the selected documents.")
-    else:
-        st.success(f"Found {len(reports_df)} community reports")
+    with st.expander("📋 Community Reports", expanded=False):
+        # Load community reports
+        with st.spinner("Loading community reports..."):
+            reports_df = load_community_reports(selected_doc_ids)
         
-        # Sort reports by rank (descending) and then by level
-        if 'rank' in reports_df.columns:
-            reports_df = reports_df.sort_values(['rank', 'level'], ascending=[False, True])
+        if reports_df.empty:
+            st.info("No community reports found for the selected documents.")
+        else:
+            st.success(f"Found {len(reports_df)} community reports")
         
-        # Display reports
-        for idx, report in reports_df.iterrows():
-            # Create a nice header with rank/rating
-            rank = report.get('rank', 0)
+            # Sort reports by rank (descending) and then by level
+            if 'rank' in reports_df.columns:
+                reports_df = reports_df.sort_values(['rank', 'level'], ascending=[False, True])
             
-            with st.expander(f"📝 {report.get('title', 'Untitled Report')} (Rank: {rank:.1f})", expanded=(idx < 3)):
-                # Report metadata
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.markdown(f"**Source:** {report.get('source_document', 'Unknown')}")
-                with col2:
-                    st.markdown(f"**Level:** {report.get('level', 'N/A')}")
-                with col3:
-                    st.markdown(f"**Community ID:** {report.get('community', 'N/A')}")
+            # Display reports
+            for idx, report in reports_df.iterrows():
+                # Create a nice header with rank/rating
+                rank = report.get('rank', 0)
                 
-                # Summary
-                if 'summary' in report and pd.notna(report['summary']):
-                    st.markdown("**Summary:**")
-                    st.info(report['summary'])
-                
-                # Rating explanation
-                if 'rating_explanation' in report and pd.notna(report['rating_explanation']):
-                    st.markdown(f"**Rating Explanation:** {report['rating_explanation']}")
-                
-                # Findings
-                if 'findings' in report and report['findings'] is not None:
-                    findings = report['findings']
-                    if isinstance(findings, (list, np.ndarray)) and len(findings) > 0:
-                        st.markdown("**Key Findings:**")
-                        for finding in findings:
-                            if isinstance(finding, dict):
-                                if 'summary' in finding:
-                                    st.markdown(f"• **{finding['summary']}**")
-                                if 'explanation' in finding:
-                                    st.markdown(f"  {finding['explanation']}")
+                with st.expander(f"📝 {report.get('title', 'Untitled Report')} (Rank: {rank:.1f})", expanded=(idx < 3)):
+                    # Report metadata
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.markdown(f"**Source:** {report.get('source_document', 'Unknown')}")
+                    with col2:
+                        st.markdown(f"**Level:** {report.get('level', 'N/A')}")
+                    with col3:
+                        st.markdown(f"**Community ID:** {report.get('community', 'N/A')}")
                     
-                # Full content (optional, collapsed by default)
-                if 'full_content' in report and pd.notna(report['full_content']):
-                    with st.expander("View Full Report", expanded=False):
-                        st.markdown(report['full_content'])
+                    # Summary
+                    if 'summary' in report and pd.notna(report['summary']):
+                        st.markdown("**Summary:**")
+                        st.info(report['summary'])
+                    
+                    # Rating explanation
+                    if 'rating_explanation' in report and pd.notna(report['rating_explanation']):
+                        st.markdown(f"**Rating Explanation:** {report['rating_explanation']}")
+                    
+                    # Findings
+                    if 'findings' in report and report['findings'] is not None:
+                        findings = report['findings']
+                        if isinstance(findings, (list, np.ndarray)) and len(findings) > 0:
+                            st.markdown("**Key Findings:**")
+                            for finding in findings:
+                                if isinstance(finding, dict):
+                                    if 'summary' in finding:
+                                        st.markdown(f"• **{finding['summary']}**")
+                                    if 'explanation' in finding:
+                                        st.markdown(f"  {finding['explanation']}")
+                        
+                    # Full content (optional, collapsed by default)
+                    if 'full_content' in report and pd.notna(report['full_content']):
+                        with st.expander("View Full Report", expanded=False):
+                            st.markdown(report['full_content'])
     
-    # Audio Lecture Section
-    st.markdown("---")
-    st.subheader("🎙️ Audio Lecture Generator")
-    st.caption("Generate comprehensive audio lectures from document content")
+    # Simple Read Aloud section at the bottom
+    if selected_docs:
+        st.markdown("---")
+        st.subheader("🔊 Read Aloud")
+        
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            if st.button("🔊 Read All Summaries", help="Read all document summaries aloud"):
+                # Combine all document summaries
+                all_summaries = []
+                for doc in selected_docs:
+                    doc_details = get_document_by_id(doc['id'])
+                    if doc_details and doc_details.get('summary'):
+                        all_summaries.append(f"{doc_details['display_name']}: {doc_details['summary']}")
+                
+                if all_summaries:
+                    combined_text = ". ".join(all_summaries)
+                    text_to_speech(combined_text)
+        
+        with col2:
+            if st.button("⏹️ Stop Reading", help="Stop audio playback"):
+                stop_speech_html = """
+                <script>window.speechSynthesis.cancel();</script>
+                """
+                html(stop_speech_html, height=0)
+
+def render_graph_tab(selected_doc_ids):
+    """Render the Graph Explorer tab with embedded controls."""
+    if not selected_doc_ids:
+        st.info("👈 Select documents from the sidebar to explore the knowledge graph.")
+        st.markdown("""
+        ### 🔍 Graph Explorer
+        
+        This tab provides an interactive visualization of your document knowledge graphs:
+        
+        - **Interactive Network**: Explore entities and their relationships
+        - **Dynamic Filtering**: Filter by entity types, connections, and search terms
+        - **Entity Details**: Click nodes to see detailed information
+        - **Multiple Layouts**: Choose from different visualization algorithms
+        """)
+        return
     
-    # Check if documents are selected
+    # Load data for selected documents
+    with st.spinner("🔄 Loading and merging graph data..."):
+        entities, relationships = load_multi_document_data(selected_doc_ids)
+    
+    if entities.empty:
+        st.warning("⚠️ No graph data found for the selected documents.")
+        return
+    
+    # Get document names for display
+    processed_docs = get_processed_documents()
+    selected_doc_names = []
+    for doc in processed_docs:
+        if doc['id'] in selected_doc_ids:
+            selected_doc_names.append(doc['display_name'])
+    
+    # Header with document info
+    st.markdown(f"""<div style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1rem 2rem; border-radius: 8px; margin-bottom: 1rem;">
+        <h3 style="color: white; margin: 0;">🔍 Exploring: {', '.join(selected_doc_names)}</h3>
+        <p style="color: rgba(255,255,255,0.9); margin: 0.5rem 0 0 0;">✅ {len(entities)} entities • {len(relationships)} relationships</p>
+    </div>""", unsafe_allow_html=True)
+    
+    # Graph Controls Panel - Embedded in tab
+    with st.expander("🎛️ Graph Controls", expanded=True):
+        col1, col2, col3 = st.columns([2, 2, 1])
+        
+        with col1:
+            st.markdown("**🔍 Filters**")
+            # Entity type filter
+            entity_types = get_entity_type_options(entities)
+            selected_types = st.multiselect(
+                "Entity Types",
+                entity_types,
+                default=entity_types,
+                key="graph_entity_types",
+                help="Filter by entity types to focus your analysis"
+            )
+            
+            # Search filter
+            search_term = st.text_input(
+                "Search Entities", 
+                key="graph_search_term",
+                placeholder="Type to search entities...",
+                help="Search for specific entities by name"
+            )
+        
+        with col2:
+            st.markdown("**⚙️ Layout Settings**")
+            # Layout options
+            layout_option = st.selectbox(
+                "Layout Algorithm",
+                ["barnes_hut", "force_atlas_2", "hierarchical"],
+                index=0,
+                key="graph_layout",
+                help="Choose visualization algorithm"
+            )
+            
+            # Degree range filter
+            min_degree, max_degree = get_degree_range(entities)
+            if min_degree < max_degree:
+                degree_range = st.slider(
+                    "Connection Range",
+                    min_value=min_degree,
+                    max_value=max_degree,
+                    value=(min_degree, max_degree),
+                    key="graph_degree_range",
+                    help="Filter entities by number of connections"
+                )
+            else:
+                degree_range = (min_degree, max_degree)
+        
+        with col3:
+            st.markdown("**🚀 Performance**")
+            # Performance optimization
+            optimize_graph = st.checkbox(
+                "Performance Mode",
+                value=len(entities) > 100,
+                key="graph_optimize",
+                help="Show only top 100 most connected nodes for better performance"
+            )
+            
+            # Create NetworkX graph for statistics
+            G = create_networkx_graph(entities, relationships)
+            
+            st.metric("👥 Entities", len(entities))
+            st.metric("🔗 Relations", len(relationships))
+            st.metric("🔴 Components", nx.number_connected_components(G))
+    
+    # Optimize for large graphs if enabled
+    display_entities = entities
+    display_relationships = relationships
+    
+    if optimize_graph:
+        display_entities, display_relationships = optimize_for_large_graph(
+            entities, relationships, threshold=100
+        )
+        st.info(f"📈 Displaying top {len(display_entities)} entities for performance")
+    
+    # Create PyVis network
+    try:
+        with st.spinner("🔄 Creating interactive network..."):
+            net = create_pyvis_network(
+                display_entities,
+                display_relationships,
+                entity_filter=selected_types if selected_types else None,
+                degree_range=degree_range,
+                search_term=search_term if search_term else None,
+                layout=layout_option
+            )
+            
+            # Render network
+            html_content = render_pyvis_network(net)
+            
+            # Display in Streamlit - full width
+            components.html(html_content, height=700)
+    except Exception as e:
+        st.error(f"❌ Error creating graph: {e}")
+        st.info("💡 Try adjusting the filters or switching to a different layout algorithm.")
+    
+    # Entity search and details section
+    with st.expander("🔍 Entity Search & Details", expanded=False):
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # Entity search
+            entity_search = st.text_input("Search for specific entity:", key="graph_entity_search")
+            
+            if entity_search:
+                # Filter entities by search term
+                filtered_entities = entities[
+                    entities['title'].str.contains(entity_search, case=False, na=False)
+                ]
+                
+                if not filtered_entities.empty:
+                    selected_entity = st.selectbox(
+                        "Select entity:",
+                        filtered_entities['title'].tolist(),
+                        key="graph_selected_entity"
+                    )
+                    
+                    # Show entity details
+                    entity_data = filtered_entities[filtered_entities['title'] == selected_entity].iloc[0]
+                    
+                    st.markdown(f"**Type:** {entity_data.get('type', 'Unknown')}")
+                    st.markdown(f"**Source:** {entity_data.get('source_document', 'Unknown')}")
+                    if 'description' in entity_data:
+                        st.markdown(f"**Description:** {entity_data['description']}")
+                else:
+                    st.info("No entities found matching your search.")
+        
+        with col2:
+            # Show sample entities
+            if not entities.empty:
+                st.markdown("**Sample Entities:**")
+                sample_entities = entities.sample(min(8, len(entities)))
+                for _, entity in sample_entities.iterrows():
+                    source_doc = entity.get('source_document', 'Unknown')[:15]
+                    st.markdown(f"• **{entity['title']}** ({source_doc}...)")
+
+
+def render_audio_tab(selected_doc_ids):
+    """Render the audio lecture generation tab."""
+    # Get selected documents
+    all_docs = get_all_documents()
+    selected_docs = [doc for doc in all_docs if doc['id'] in selected_doc_ids]
+    
     if not selected_docs:
         st.info("📄 Please select documents from the sidebar to generate audio lectures.")
         return
+    
+    st.header("🎙️ Audio Lecture Generator")
+    st.caption("Generate comprehensive audio lectures from document content")
     
     # Import audio lecture generator
     try:
@@ -1637,299 +1602,163 @@ def render_document_summary_tab(selected_doc_ids):
                     st.error("❌ No document summary available for lecture generation")
                     st.stop()
                 
-                if not all_section_summaries:
-                    st.warning("⚠️ No section summaries available. Generating basic lecture from document summary only.")
-                
-                # Generate lecture script
-                st.info("📝 Generating lecture script...")
-                lecture_sections, full_script = generator.generate_lecture_script(
-                    document_summary=document_summary,
-                    section_summaries=all_section_summaries,
-                    detail_level=detail_level,
-                    include_entities=include_entities,
-                    include_relationships=include_relationships,
-                    include_bullet_points=include_bullet_points,
-                    additional_context=additional_context,
-                    use_dynamic=use_dynamic_format
-                )
-                
-                # Save the lecture script
-                doc_id = selected_docs[0]['id'] if selected_docs else None
-                if doc_id:
-                    save_metadata = {
-                        'voice': lecture_voice,
-                        'quality': lecture_quality,
-                        'include_entities': include_entities,
-                        'include_relationships': include_relationships,
-                        'include_bullet_points': include_bullet_points,
-                        'document_name': document_summary['display_name']
-                    }
-                    
-                    saved = generator.save_lecture_script(
-                        document_id=doc_id,
-                        lecture_sections=lecture_sections,
-                        full_script=full_script,
+                # Generate the lecture script
+                try:
+                    lecture_script = generator.generate_comprehensive_lecture(
+                        document_summary=document_summary,
+                        section_summaries=all_section_summaries,
                         detail_level=detail_level,
-                        metadata=save_metadata
+                        additional_context=additional_context,
+                        include_bullet_points=include_bullet_points,
+                        use_dynamic_format=use_dynamic_format
                     )
                     
-                    if saved:
-                        st.success("💾 Lecture script saved to document workspace")
-                    else:
-                        st.warning("⚠️ Could not save lecture script to workspace")
-                
-                # Show lecture preview
-                duration_estimate = generator.estimate_lecture_duration(full_script)
-                st.success(f"✅ Lecture script generated! Estimated duration: {duration_estimate} minutes")
-                
-                # Display lecture outline
-                with st.expander("📋 Lecture Outline", expanded=True):
-                    for section in lecture_sections:
-                        if section.section_type == "introduction":
-                            st.markdown(f"**🎬 {section.title}**")
-                        elif section.section_type == "conclusion":
-                            st.markdown(f"**🎭 {section.title}**")
-                        elif section.section_type == "transition":
-                            st.markdown(f"*➡️ {section.title}*")
-                        else:
-                            indent = "  " * (section.level - 1)
-                            st.markdown(f"{indent}**📍 {section.title}**")
-                
-                # Show full script preview
-                with st.expander("📜 Full Lecture Script", expanded=False):
-                    st.text_area(
-                        "Lecture script:",
-                        value=full_script,
-                        height=300,
-                        disabled=True
+                    # Save the lecture script
+                    saved_lecture = generator.save_lecture_script(
+                        document_id=selected_docs[0]['id'],
+                        script=lecture_script,
+                        detail_level=detail_level.name
                     )
-                
-                # Generate audio
-                st.info("🎵 Generating audio file...")
-                audio_bytes, error = generate_tts_audio(
-                    full_script,
-                    voice=lecture_voice,
-                    model=lecture_quality
-                )
-                
-                if audio_bytes:
-                    st.success("✅ Audio lecture generated successfully!")
                     
-                    # Play audio
-                    st.audio(audio_bytes, format="audio/mp3")
-                    
-                    # Download buttons
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Download audio button
-                        from datetime import datetime
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        audio_filename = f"lecture_{document_summary['display_name'].replace(' ', '_')}_{timestamp}.mp3"
+                    if saved_lecture:
+                        st.success("✅ Lecture script generated successfully!")
                         
-                        st.download_button(
-                            label="📥 Download Audio (MP3)",
-                            data=audio_bytes,
-                            file_name=audio_filename,
-                            mime="audio/mpeg",
-                            use_container_width=True
-                        )
-                    
-                    with col2:
-                        # Download script button
-                        script_filename = f"lecture_script_{document_summary['display_name'].replace(' ', '_')}_{timestamp}.txt"
+                        # Display lecture info
+                        col1, col2 = st.columns([3, 1])
                         
-                        st.download_button(
-                            label="📄 Download Script (TXT)",
-                            data=full_script,
-                            file_name=script_filename,
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                else:
-                    st.error(f"❌ Failed to generate audio: {error}")
-                    st.info("💡 Make sure your OpenAI API key is configured in the .env file")
-        
+                        with col1:
+                            st.markdown(f"**Duration Estimate:** {saved_lecture['duration_estimate']} minutes")
+                            st.markdown(f"**Word Count:** {saved_lecture['word_count']:,} words")
+                            st.markdown(f"**Detail Level:** {saved_lecture['detail_level']}")
+                        
+                        with col2:
+                            # Download script button
+                            st.download_button(
+                                label="📥 Download Script",
+                                data=lecture_script,
+                                file_name=f"lecture_script_{detail_level.name.lower()}.txt",
+                                mime="text/plain"
+                            )
+                        
+                        # Show script preview
+                        with st.expander("📄 Lecture Script Preview", expanded=True):
+                            # Show first 1000 characters
+                            preview_length = min(2000, len(lecture_script))
+                            st.text_area(
+                                "Script Preview:",
+                                value=lecture_script[:preview_length] + ("..." if len(lecture_script) > preview_length else ""),
+                                height=300,
+                                disabled=True
+                            )
+                        
+                        # Generate audio button
+                        st.markdown("---")
+                        st.subheader("🎤 Generate Audio File")
+                        
+                        col1, col2 = st.columns([2, 1])
+                        
+                        with col1:
+                            if st.button("🔊 Generate Audio (OpenAI TTS)", type="secondary", use_container_width=True):
+                                with st.spinner("🎵 Converting script to audio... This may take a few minutes..."):
+                                    # Split the script into chunks if it's too long
+                                    max_chunk_size = 4000  # OpenAI TTS limit
+                                    
+                                    if len(lecture_script) <= max_chunk_size:
+                                        # Generate single audio file
+                                        audio_bytes, error = generate_tts_audio(
+                                            lecture_script,
+                                            voice=lecture_voice,
+                                            model=lecture_quality
+                                        )
+                                        
+                                        if audio_bytes:
+                                            st.success("✅ Audio generated successfully!")
+                                            st.audio(audio_bytes, format="audio/mp3")
+                                            
+                                            # Download button
+                                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                            filename = f"lecture_{detail_level.name.lower()}_{timestamp}.mp3"
+                                            
+                                            st.download_button(
+                                                label="💾 Download Audio",
+                                                data=audio_bytes,
+                                                file_name=filename,
+                                                mime="audio/mpeg"
+                                            )
+                                        else:
+                                            st.error(f"❌ Failed to generate audio: {error}")
+                                    else:
+                                        # Script is too long, need to chunk it
+                                        st.warning(f"⚠️ Script is {len(lecture_script):,} characters. Will generate in parts...")
+                                        
+                                        # Split script into sentences and chunk them
+                                        sentences = lecture_script.replace('. ', '.|').split('|')
+                                        chunks = []
+                                        current_chunk = ""
+                                        
+                                        for sentence in sentences:
+                                            if len(current_chunk) + len(sentence) < max_chunk_size:
+                                                current_chunk += sentence
+                                            else:
+                                                if current_chunk:
+                                                    chunks.append(current_chunk)
+                                                current_chunk = sentence
+                                        
+                                        if current_chunk:
+                                            chunks.append(current_chunk)
+                                        
+                                        st.info(f"📊 Generating {len(chunks)} audio segments...")
+                                        
+                                        # Generate each chunk
+                                        audio_segments = []
+                                        for i, chunk in enumerate(chunks):
+                                            with st.spinner(f"Generating segment {i+1}/{len(chunks)}..."):
+                                                audio_bytes, error = generate_tts_audio(
+                                                    chunk,
+                                                    voice=lecture_voice,
+                                                    model=lecture_quality
+                                                )
+                                                
+                                                if audio_bytes:
+                                                    audio_segments.append(audio_bytes)
+                                                    st.success(f"✅ Segment {i+1} generated")
+                                                else:
+                                                    st.error(f"❌ Failed to generate segment {i+1}: {error}")
+                                                    break
+                                        
+                                        if len(audio_segments) == len(chunks):
+                                            st.success("✅ All segments generated successfully!")
+                                            st.info("📥 Download each segment below:")
+                                            
+                                            # Provide download buttons for each segment
+                                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                            for i, audio_bytes in enumerate(audio_segments):
+                                                col1, col2 = st.columns([1, 3])
+                                                with col1:
+                                                    st.audio(audio_bytes, format="audio/mp3")
+                                                with col2:
+                                                    filename = f"lecture_{detail_level.name.lower()}_part{i+1}_{timestamp}.mp3"
+                                                    st.download_button(
+                                                        label=f"💾 Part {i+1}/{len(chunks)}",
+                                                        data=audio_bytes,
+                                                        file_name=filename,
+                                                        mime="audio/mpeg",
+                                                        key=f"dl_part_{i}"
+                                                    )
+                        
+                        with col2:
+                            st.info("💡 Tip: For best results, use HD quality for important presentations")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error generating lecture: {str(e)}")
+                    logger.error(f"Lecture generation error: {e}")
+    
     except ImportError as e:
-        st.error(f"❌ Audio lecture feature not available: {e}")
-        st.info("Please make sure all required dependencies are installed.")
+        st.error("❌ Audio lecture generator module not found. Please ensure all dependencies are installed.")
+        logger.error(f"Import error in audio tab: {e}")
     except Exception as e:
-        st.error(f"❌ Error in audio lecture generation: {e}")
-        logger.error(f"Audio lecture error: {e}")
-
-def render_graph_tab(selected_doc_ids):
-    """Render the Graph Explorer tab with embedded controls."""
-    if not selected_doc_ids:
-        st.info("👈 Select documents from the sidebar to explore the knowledge graph.")
-        st.markdown("""
-        ### 🔍 Graph Explorer
-        
-        This tab provides an interactive visualization of your document knowledge graphs:
-        
-        - **Interactive Network**: Explore entities and their relationships
-        - **Dynamic Filtering**: Filter by entity types, connections, and search terms
-        - **Entity Details**: Click nodes to see detailed information
-        - **Multiple Layouts**: Choose from different visualization algorithms
-        """)
-        return
-    
-    # Load data for selected documents
-    with st.spinner("🔄 Loading and merging graph data..."):
-        entities, relationships = load_multi_document_data(selected_doc_ids)
-    
-    if entities.empty:
-        st.warning("⚠️ No graph data found for the selected documents.")
-        return
-    
-    # Get document names for display
-    processed_docs = get_processed_documents()
-    selected_doc_names = []
-    for doc in processed_docs:
-        if doc['id'] in selected_doc_ids:
-            selected_doc_names.append(doc['display_name'])
-    
-    # Header with document info
-    st.markdown(f"""<div style="background: linear-gradient(90deg, #4CAF50 0%, #45A049 100%); padding: 1rem 2rem; border-radius: 8px; margin-bottom: 1rem;">
-        <h3 style="color: white; margin: 0;">🔍 Exploring: {', '.join(selected_doc_names)}</h3>
-        <p style="color: rgba(255,255,255,0.9); margin: 0.5rem 0 0 0;">✅ {len(entities)} entities • {len(relationships)} relationships</p>
-    </div>""", unsafe_allow_html=True)
-    
-    # Graph Controls Panel - Embedded in tab
-    with st.expander("🎛️ Graph Controls", expanded=True):
-        col1, col2, col3 = st.columns([2, 2, 1])
-        
-        with col1:
-            st.markdown("**🔍 Filters**")
-            # Entity type filter
-            entity_types = get_entity_type_options(entities)
-            selected_types = st.multiselect(
-                "Entity Types",
-                entity_types,
-                default=entity_types,
-                key="graph_entity_types",
-                help="Filter by entity types to focus your analysis"
-            )
-            
-            # Search filter
-            search_term = st.text_input(
-                "Search Entities", 
-                key="graph_search_term",
-                placeholder="Type to search entities...",
-                help="Search for specific entities by name"
-            )
-        
-        with col2:
-            st.markdown("**⚙️ Layout Settings**")
-            # Layout options
-            layout_option = st.selectbox(
-                "Layout Algorithm",
-                ["barnes_hut", "force_atlas_2", "hierarchical"],
-                index=0,
-                key="graph_layout",
-                help="Choose visualization algorithm"
-            )
-            
-            # Degree range filter
-            min_degree, max_degree = get_degree_range(entities)
-            if min_degree < max_degree:
-                degree_range = st.slider(
-                    "Connection Range",
-                    min_value=min_degree,
-                    max_value=max_degree,
-                    value=(min_degree, max_degree),
-                    key="graph_degree_range",
-                    help="Filter entities by number of connections"
-                )
-            else:
-                degree_range = (min_degree, max_degree)
-        
-        with col3:
-            st.markdown("**🚀 Performance**")
-            # Performance optimization
-            optimize_graph = st.checkbox(
-                "Performance Mode",
-                value=len(entities) > 100,
-                key="graph_optimize",
-                help="Show only top 100 most connected nodes for better performance"
-            )
-            
-            # Create NetworkX graph for statistics
-            G = create_networkx_graph(entities, relationships)
-            
-            st.metric("👥 Entities", len(entities))
-            st.metric("🔗 Relations", len(relationships))
-            st.metric("🔴 Components", nx.number_connected_components(G))
-    
-    # Optimize for large graphs if enabled
-    display_entities = entities
-    display_relationships = relationships
-    
-    if optimize_graph:
-        display_entities, display_relationships = optimize_for_large_graph(
-            entities, relationships, threshold=100
-        )
-        st.info(f"📈 Displaying top {len(display_entities)} entities for performance")
-    
-    # Create PyVis network
-    try:
-        with st.spinner("🔄 Creating interactive network..."):
-            net = create_pyvis_network(
-                display_entities,
-                display_relationships,
-                entity_filter=selected_types if selected_types else None,
-                degree_range=degree_range,
-                search_term=search_term if search_term else None,
-                layout=layout_option
-            )
-            
-            # Render network
-            html_content = render_pyvis_network(net)
-            
-            # Display in Streamlit - full width
-            components.html(html_content, height=700)
-    except Exception as e:
-        st.error(f"❌ Error creating graph: {e}")
-        st.info("💡 Try adjusting the filters or switching to a different layout algorithm.")
-    
-    # Entity search and details section
-    with st.expander("🔍 Entity Search & Details", expanded=False):
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            # Entity search
-            entity_search = st.text_input("Search for specific entity:", key="graph_entity_search")
-            
-            if entity_search:
-                # Filter entities by search term
-                filtered_entities = entities[
-                    entities['title'].str.contains(entity_search, case=False, na=False)
-                ]
-                
-                if not filtered_entities.empty:
-                    selected_entity = st.selectbox(
-                        "Select entity:",
-                        filtered_entities['title'].tolist(),
-                        key="graph_selected_entity"
-                    )
-                    
-                    # Show entity details
-                    entity_data = filtered_entities[filtered_entities['title'] == selected_entity].iloc[0]
-                    
-                    st.markdown(f"**Type:** {entity_data.get('type', 'Unknown')}")
-                    st.markdown(f"**Source:** {entity_data.get('source_document', 'Unknown')}")
-                    if 'description' in entity_data:
-                        st.markdown(f"**Description:** {entity_data['description']}")
-                else:
-                    st.info("No entities found matching your search.")
-        
-        with col2:
-            # Show sample entities
-            if not entities.empty:
-                st.markdown("**Sample Entities:**")
-                sample_entities = entities.sample(min(8, len(entities)))
-                for _, entity in sample_entities.iterrows():
-                    source_doc = entity.get('source_document', 'Unknown')[:15]
-                    st.markdown(f"• **{entity['title']}** ({source_doc}...)")
+        st.error(f"❌ Unexpected error in audio tab: {str(e)}")
+        logger.error(f"Audio tab error: {e}")
 
 
 def check_for_stuck_documents_periodically():
@@ -1974,10 +1803,11 @@ def main():
     
     # Main tab navigation - only show if documents are selected
     if selected_doc_ids:
-        tab_summary, tab_chat, tab_graph = st.tabs([
+        tab_summary, tab_chat, tab_graph, tab_audio = st.tabs([
             "📊 Summary",
             "💬 Chat Assistant",
-            "🔍 Graph Explorer"
+            "🔍 Graph Explorer",
+            "🎙️ Audio"
         ])
         
         with tab_summary:
@@ -1988,6 +1818,9 @@ def main():
         
         with tab_graph:
             render_graph_tab(selected_doc_ids)
+        
+        with tab_audio:
+            render_audio_tab(selected_doc_ids)
     else:
         # Welcome screen when no documents selected
         st.info("👈 Select documents from the sidebar to begin exploring.")

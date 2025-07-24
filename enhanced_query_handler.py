@@ -310,8 +310,8 @@ Please provide a comprehensive and accurate answer based only on the information
             if use_o1_model:
                 response = self.client.chat.completions.create(
                     model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=1
+                    messages=[{"role": "user", "content": prompt}]
+                    # o1 models don't support temperature parameter
                 )
             else:
                 response = self.client.chat.completions.create(
